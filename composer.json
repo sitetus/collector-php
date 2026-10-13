@@ -1,0 +1,29 @@
+{
+    "name": "sitetus/collector",
+    "description": "Read-only single-file PHP collector for the Sitetus monitoring panel: answers the panel's signed pull with an inventory and health envelope, keeps no secret on the server.",
+    "license": "MIT",
+    "type": "library",
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "Sitetus\\Collector\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Sitetus\\Collector\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "build": "php build/build.php",
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

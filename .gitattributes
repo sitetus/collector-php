@@ -1,0 +1,9 @@
+# 0.5.1 (audit 25.09): dist archives carry the collector, not the test
+# fixtures (which include test-only private keys) or the CI plumbing.
+/tests            export-ignore
+/laravel/tests    export-ignore
+/.github          export-ignore
+/phpunit.xml      export-ignore
+/laravel/phpunit.xml export-ignore
+/.gitattributes   export-ignore
+/.gitignore       export-ignore

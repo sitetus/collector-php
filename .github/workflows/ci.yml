@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 0.5.1 (audit 25.09): the token can read the repository and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: sodium, openssl, json
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: Run tests
+        run: vendor/bin/phpunit
+
+      - name: Build single file
+        run: php build/build.php
+
+      - name: Lint built file
+        run: php -l dist/index.php
+
+      - name: Report build hash
+        run: |
+          HASH=$(sha256sum dist/index.php | cut -d' ' -f1)
+          echo "dist/index.php sha256: $HASH"
+          echo "### dist/index.php" >> "$GITHUB_STEP_SUMMARY"
+          echo "SHA-256: \`$HASH\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build artifact
+        if: matrix.php == '8.4' && matrix.sodium == 'enabled'
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-dist
+          path: dist/index.php
+
