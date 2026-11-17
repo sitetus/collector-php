@@ -148,13 +148,17 @@ final class ModulesTest extends TestCase
         // Code before the marker (a decoder under assert) is still judged; the shape is chosen so
         // that a desktop antivirus does not quarantine the fixture while the test runs.
         file_put_contents($root.'/public/wflogs/stub.php', "<?php assert(str_rot13(\$x)); __halt_compiler(); ?>\n".$payload);
+        // The marker counts only as a token: mentioned in a comment or a string it stops nothing,
+        // so a shell that names it is still scanned to the end.
+        file_put_contents($root.'/public/wflogs/mention.php', "<?php // __halt_compiler\n\$m = '__halt_compiler();';\nassert(str_rot13(\$x));\n");
+        file_put_contents($root.'/public/wflogs/payload-only.php', "<?php // __halt_compiler is just a word here\n".$payload);
 
         $section = (new ModuleRunner($this->configWithModules($root, 'files')))->run($root, ['detected' => 'laravel'], time());
         $suspicious = $section['files']['php_files']['suspicious'];
 
-        $this->assertSame(4, $suspicious['inspected']);
-        $this->assertSame(2, $suspicious['count']);
-        $this->assertSame(['wp-cache.php', 'wflogs/stub.php'], $suspicious['names']);
+        $this->assertSame(6, $suspicious['inspected']);
+        $this->assertSame(4, $suspicious['count']);
+        $this->assertSame(['wp-cache.php', 'wflogs/mention.php', 'wflogs/payload-only.php', 'wflogs/stub.php'], $suspicious['names']);
         $this->assertFalse($suspicious['partial']);
     }
 

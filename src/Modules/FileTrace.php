@@ -527,9 +527,9 @@ final class FileTrace
         // file wrapped in PHP (Wordfence's wflogs store, Phar stubs) is
         // judged by its code part only: the payload neither matches the
         // base64 rule nor needs the tail sample.
-        $haltAt = stripos($sample, '__halt_compiler');
+        $haltAt = $this->haltCompilerOffset($sample);
 
-        if ($haltAt !== false) {
+        if ($haltAt !== null) {
             fclose($handle);
 
             return $this->matchesSignature(substr($sample, 0, $haltAt));
@@ -545,6 +545,31 @@ final class FileTrace
         fclose($handle);
 
         return $this->matchesSignature($sample);
+    }
+
+    /**
+     * Byte offset of a real __halt_compiler token in the head sample, or
+     * null. The marker is honoured only as a token: inside a comment or a
+     * string it stops nothing, so a shell that merely mentions it is still
+     * scanned whole. Hosts without the tokenizer keep the full scan.
+     */
+    private function haltCompilerOffset(string $sample): ?int
+    {
+        if (stripos($sample, '__halt_compiler') === false || ! function_exists('token_get_all')) {
+            return null;
+        }
+
+        $offset = 0;
+
+        foreach ((array) @token_get_all($sample) as $token) {
+            if (is_array($token) && $token[0] === T_HALT_COMPILER) {
+                return $offset;
+            }
+
+            $offset += strlen(is_array($token) ? (string) $token[1] : (string) $token);
+        }
+
+        return null;
     }
 
     private function matchesSignature(string $sample): bool
