@@ -158,31 +158,52 @@ final class ModulesTest extends TestCase
 
         $this->assertSame(6, $suspicious['inspected']);
         $this->assertSame(4, $suspicious['count']);
-        $this->assertSame(['wp-cache.php', 'wflogs/mention.php', 'wflogs/payload-only.php', 'wflogs/stub.php'], $suspicious['names']);
+        // Names are sorted: the daily start of the content scan must not reorder the envelope.
+        $this->assertSame(['wflogs/mention.php', 'wflogs/payload-only.php', 'wflogs/stub.php', 'wp-cache.php'], $suspicious['names']);
         $this->assertFalse($suspicious['partial']);
     }
 
     /**
      * 0.7.3: the content scan stops at its cap (and the walk at its budget);
-     * the envelope says so instead of letting "nothing matched" read as clean.
+     * the envelope says so instead of letting "nothing matched" read as clean,
+     * and the start moves every day so the tail of a large set is read too.
      */
-    public function testFileTraceReportsAPartialContentScan(): void
+    public function testFileTraceReportsAPartialContentScanAndRotatesItsStart(): void
     {
         $root = $this->laravelProject();
+        unlink($root.'/public/wp-cache.php');
         mkdir($root.'/public/many', 0777, true);
 
         for ($i = 0; $i < 2000; $i++) {
-            file_put_contents($root.'/public/many/f'.$i.'.php', '<?php');
+            file_put_contents($root.'/public/many/f'.sprintf('%04d', $i).'.php', '<?php');
         }
 
-        $section = (new ModuleRunner($this->configWithModules($root, 'files')))->run($root, ['detected' => 'laravel'], time());
-        $phpFiles = $section['files']['php_files'];
+        // Sorted last in the walk: index.php, many/f0000..f1999, many/zz.php (2002 files).
+        file_put_contents($root.'/public/many/zz.php', '<?php assert(str_rot13($x));');
 
-        // A slow disk may also stop the walk at its 3-second budget: either way the scan is partial.
-        $this->assertLessThanOrEqual(2000, $phpFiles['suspicious']['inspected']);
-        $this->assertLessThanOrEqual($phpFiles['count'], $phpFiles['suspicious']['inspected']);
-        $this->assertTrue($phpFiles['suspicious']['partial']);
-        $this->assertTrue($phpFiles['suspicious']['inspected'] < $phpFiles['count'] || $phpFiles['budget_exhausted']);
+        $runner = new ModuleRunner($this->configWithModules($root, 'files'));
+
+        // Day 0 starts at the top: the cap stops two files short of the shell.
+        $day0 = $runner->run($root, ['detected' => 'laravel'], 0)['files']['php_files'];
+
+        $this->assertSame(2002, $day0['count']);
+        $this->assertSame(0, \Sitetus\Collector\Modules\FileTrace::contentScanOffset(2002, 0));
+        $this->assertLessThanOrEqual(2000, $day0['suspicious']['inspected']);
+        $this->assertTrue($day0['suspicious']['partial']);
+
+        if ($day0['suspicious']['inspected'] === 2000 && ! $day0['budget_exhausted']) {
+            $this->assertSame(0, $day0['suspicious']['count']);
+        }
+
+        // Day 1 starts CONTENT_SCAN_STRIDE files further and reaches the tail.
+        $day1 = $runner->run($root, ['detected' => 'laravel'], 86400)['files']['php_files'];
+
+        $this->assertSame(\Sitetus\Collector\Modules\FileTrace::CONTENT_SCAN_STRIDE, \Sitetus\Collector\Modules\FileTrace::contentScanOffset(2002, 86400));
+        $this->assertTrue($day1['suspicious']['partial']);
+
+        if ($day1['suspicious']['inspected'] >= 2002 - \Sitetus\Collector\Modules\FileTrace::CONTENT_SCAN_STRIDE) {
+            $this->assertSame(['many/zz.php'], $day1['suspicious']['names']);
+        }
     }
 
     /**

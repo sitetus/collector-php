@@ -32,6 +32,12 @@ final class FileTrace
 
     private const CONTENT_SCAN_BYTES = 8192;
 
+    /** 0.7.3: wall-clock budget of the content scan, separate from the walk's. */
+    private const CONTENT_SCAN_SECONDS = 3.0;
+
+    /** 0.7.3: files the daily starting point moves forward (see contentScanOffset()). */
+    public const CONTENT_SCAN_STRIDE = 200;
+
     private const CONTROL_READ_BYTES = 4096;
 
     /**
@@ -453,40 +459,54 @@ final class FileTrace
     private function phpFiles(string $webRoot, int $now): array
     {
         $scanner = new Scanner(20000, 6, 3.0);
-        $count = 0;
+        $files = [];
         $recent = [];
         $recentCount = 0;
-        $suspicious = [];
-        $suspiciousCount = 0;
-        $inspected = 0;
         $fingerprint = hash_init('sha256');
         $threshold = $now - self::RECENT_DAYS * 86400;
 
-        $scanner->walk($webRoot, function (string $absolute, string $relative, bool $isDir) use (&$count, &$recent, &$recentCount, &$suspicious, &$suspiciousCount, &$inspected, $fingerprint, $threshold): void {
+        // 0.7.3: the walk only stats (name + mtime); reading content inside it
+        // made the 3-second budget run out after ~400 files on a slow disk.
+        $scanner->walk($webRoot, function (string $absolute, string $relative, bool $isDir) use (&$files, &$recent, &$recentCount, $fingerprint, $threshold): void {
             if ($isDir || ! in_array(Scanner::extension($relative), self::EXECUTABLE, true)) {
                 return;
             }
 
             $mtime = (int) @filemtime($absolute);
-            $count++;
+            $files[] = [$absolute, $relative];
             hash_update($fingerprint, $relative.'|'.$mtime."\n");
 
             if ($mtime >= $threshold) {
                 $recentCount++;
                 Scanner::push($recent, ['name' => Scanner::safeName($relative), 'mtime' => $mtime]);
             }
-
-            // 0.4.0: web-shell / injected-code signatures in the head and
-            // tail of the file (read locally, only a name leaves).
-            if ($inspected < self::CONTENT_SCAN_MAX_FILES) {
-                $inspected++;
-
-                if ($this->hasSuspiciousCode($absolute)) {
-                    $suspiciousCount++;
-                    Scanner::push($suspicious, Scanner::safeName($relative));
-                }
-            }
         }, ['vendor', 'node_modules', '.git']);
+
+        $count = count($files);
+        $suspicious = [];
+        $suspiciousCount = 0;
+        $inspected = 0;
+        $offset = self::contentScanOffset($count, $now);
+        $deadline = microtime(true) + self::CONTENT_SCAN_SECONDS;
+
+        // 0.4.0: web-shell / injected-code signatures in the head and tail of
+        // the file (read locally, only a name leaves). 0.7.3: the list is
+        // walked circularly from a daily moving start under its own budget.
+        for ($step = 0; $step < min($count, self::CONTENT_SCAN_MAX_FILES); $step++) {
+            if (microtime(true) > $deadline) {
+                break;
+            }
+
+            list($absolute, $relative) = $files[($offset + $step) % $count];
+            $inspected++;
+
+            if ($this->hasSuspiciousCode($absolute)) {
+                $suspiciousCount++;
+                Scanner::push($suspicious, Scanner::safeName($relative));
+            }
+        }
+
+        sort($suspicious);
 
         // 0.7.3: the panel must know when "nothing matched" covers only part of
         // the set — the walk stopped at its budget or the content scan at its cap.
@@ -499,6 +519,25 @@ final class FileTrace
             'suspicious' => ['count' => $suspiciousCount, 'names' => $suspicious, 'inspected' => $inspected, 'partial' => $partial],
             'budget_exhausted' => $scanner->exhausted(),
         ];
+    }
+
+    /**
+     * Where today's content scan starts in the walk order. A fixed start
+     * would leave the tail of a large set unread for ever; the collector
+     * keeps no state, so the start is derived from the calendar:
+     *
+     *     offset = (UTC day number × CONTENT_SCAN_STRIDE) mod N
+     *
+     * and the list is read circularly from there. As long as one request
+     * reads at least CONTENT_SCAN_STRIDE files (the slowest rate observed
+     * was ~390 files in 3 seconds on a shared host with content reads
+     * inside the walk; the walk no longer reads), consecutive days leave
+     * no gap and every file is read within ceil(N / stride) days. Same
+     * rule as the WordPress core integrity module.
+     */
+    public static function contentScanOffset(int $total, int $now): int
+    {
+        return $total > 0 ? (int) ((intdiv(max(0, $now), 86400) * self::CONTENT_SCAN_STRIDE) % $total) : 0;
     }
 
     /**

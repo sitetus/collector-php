@@ -5,7 +5,8 @@
 `files` module: the web-shell signature scan tells a partial scan from a clean one and no longer reads data stored behind `__halt_compiler()`.
 
 - A PHP file that ends its code with `__halt_compiler()` (Wordfence's `wflogs` store, Phar stubs) is judged by the code before the marker only; the payload after it is never compiled and does not match the long-base64 rule any more. A site running Wordfence was reported as carrying suspicious code every morning because of `wp-content/wflogs/config-transient.php`.
-- `php_files.suspicious` carries a new `partial` flag: `true` when the directory walk stopped at its budget (3 seconds, 20,000 entries) or the content scan at its cap (2,000 files). The panel reads "nothing matched" in a partial scan as unknown rather than clean; a match stands either way. Older panels ignore the key.
+- `php_files.suspicious` carries a new `partial` flag: `true` when the directory walk stopped at its budget (3 seconds, 20,000 entries) or the content scan did not reach every file. The panel reads "nothing matched" in a partial scan as unknown rather than clean; a match stands either way. Older panels ignore the key.
+- The content scan is separated from the directory walk: the walk only reads names and modification times, the signature scan then reads at most 2,000 files under its own 3-second budget, starting 200 files further along the list every day (same rule as the core integrity module). A set larger than one request can read is covered within a few days instead of leaving its tail unread for ever. Reported names are sorted.
 - Envelope format, signature material and the other modules are unchanged.
 
 ## 0.7.2 — 2026-10-13
