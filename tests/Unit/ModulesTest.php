@@ -130,6 +130,55 @@ final class ModulesTest extends TestCase
         $this->assertSame(['wp-cache.php'], $section['files']['php_files']['suspicious']['names']);
         $this->assertSame(2, $section['files']['php_files']['suspicious']['inspected']);
         $this->assertStringNotContainsString('base64', json_encode($section));
+        // 0.7.3: three PHP files, all inspected, nothing cut.
+        $this->assertFalse($section['files']['php_files']['suspicious']['partial']);
+    }
+
+    /**
+     * 0.7.3: a data store wrapped in PHP (Wordfence's wflogs files) ends its
+     * code with __halt_compiler(); the payload after it is never compiled and
+     * must not match the base64 rule. Code before the marker is still judged.
+     */
+    public function testFileTraceIgnoresThePayloadAfterHaltCompiler(): void
+    {
+        $root = $this->laravelProject();
+        mkdir($root.'/public/wflogs', 0777, true);
+        $payload = str_repeat('QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo', 40);
+        file_put_contents($root.'/public/wflogs/config-transient.php', "<?php exit('Access denied'); __halt_compiler(); ?>\n".$payload);
+        // Code before the marker (a decoder under assert) is still judged; the shape is chosen so
+        // that a desktop antivirus does not quarantine the fixture while the test runs.
+        file_put_contents($root.'/public/wflogs/stub.php', "<?php assert(str_rot13(\$x)); __halt_compiler(); ?>\n".$payload);
+
+        $section = (new ModuleRunner($this->configWithModules($root, 'files')))->run($root, ['detected' => 'laravel'], time());
+        $suspicious = $section['files']['php_files']['suspicious'];
+
+        $this->assertSame(4, $suspicious['inspected']);
+        $this->assertSame(2, $suspicious['count']);
+        $this->assertSame(['wp-cache.php', 'wflogs/stub.php'], $suspicious['names']);
+        $this->assertFalse($suspicious['partial']);
+    }
+
+    /**
+     * 0.7.3: the content scan stops at its cap (and the walk at its budget);
+     * the envelope says so instead of letting "nothing matched" read as clean.
+     */
+    public function testFileTraceReportsAPartialContentScan(): void
+    {
+        $root = $this->laravelProject();
+        mkdir($root.'/public/many', 0777, true);
+
+        for ($i = 0; $i < 2000; $i++) {
+            file_put_contents($root.'/public/many/f'.$i.'.php', '<?php');
+        }
+
+        $section = (new ModuleRunner($this->configWithModules($root, 'files')))->run($root, ['detected' => 'laravel'], time());
+        $phpFiles = $section['files']['php_files'];
+
+        // A slow disk may also stop the walk at its 3-second budget: either way the scan is partial.
+        $this->assertLessThanOrEqual(2000, $phpFiles['suspicious']['inspected']);
+        $this->assertLessThanOrEqual($phpFiles['count'], $phpFiles['suspicious']['inspected']);
+        $this->assertTrue($phpFiles['suspicious']['partial']);
+        $this->assertTrue($phpFiles['suspicious']['inspected'] < $phpFiles['count'] || $phpFiles['budget_exhausted']);
     }
 
     /**

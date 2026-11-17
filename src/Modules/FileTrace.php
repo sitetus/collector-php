@@ -488,11 +488,15 @@ final class FileTrace
             }
         }, ['vendor', 'node_modules', '.git']);
 
+        // 0.7.3: the panel must know when "nothing matched" covers only part of
+        // the set — the walk stopped at its budget or the content scan at its cap.
+        $partial = $scanner->exhausted() || $inspected < $count;
+
         return [
             'count' => $count,
             'set_hash' => hash_final($fingerprint),
             'recent' => ['count' => $recentCount, 'names' => $recent],
-            'suspicious' => ['count' => $suspiciousCount, 'names' => $suspicious, 'inspected' => $inspected],
+            'suspicious' => ['count' => $suspiciousCount, 'names' => $suspicious, 'inspected' => $inspected, 'partial' => $partial],
             'budget_exhausted' => $scanner->exhausted(),
         ];
     }
@@ -519,6 +523,18 @@ final class FileTrace
 
         $sample = (string) fread($handle, self::CONTENT_SCAN_BYTES);
 
+        // 0.7.3: nothing after __halt_compiler() is ever compiled, so a data
+        // file wrapped in PHP (Wordfence's wflogs store, Phar stubs) is
+        // judged by its code part only: the payload neither matches the
+        // base64 rule nor needs the tail sample.
+        $haltAt = stripos($sample, '__halt_compiler');
+
+        if ($haltAt !== false) {
+            fclose($handle);
+
+            return $this->matchesSignature(substr($sample, 0, $haltAt));
+        }
+
         if ($size > self::CONTENT_SCAN_BYTES * 2) {
             @fseek($handle, -self::CONTENT_SCAN_BYTES, SEEK_END);
             $sample .= "\n".(string) fread($handle, self::CONTENT_SCAN_BYTES);
@@ -528,6 +544,11 @@ final class FileTrace
 
         fclose($handle);
 
+        return $this->matchesSignature($sample);
+    }
+
+    private function matchesSignature(string $sample): bool
+    {
         foreach (self::SUSPICIOUS_PATTERNS as $pattern) {
             if (preg_match($pattern, $sample) === 1) {
                 return true;
