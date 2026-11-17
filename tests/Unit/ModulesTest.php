@@ -160,6 +160,8 @@ final class ModulesTest extends TestCase
         $this->assertSame(4, $suspicious['count']);
         // Names are sorted: the daily start of the content scan must not reorder the envelope.
         $this->assertSame(['wflogs/mention.php', 'wflogs/payload-only.php', 'wflogs/stub.php', 'wp-cache.php'], $suspicious['names']);
+        // 0.7.3: the rule that fired travels with the name, in the same order.
+        $this->assertSame(['eval_decoder', 'long_base64', 'eval_decoder', 'eval_decoder'], $suspicious['rules']);
         $this->assertFalse($suspicious['partial']);
     }
 
@@ -173,37 +175,54 @@ final class ModulesTest extends TestCase
         $root = $this->laravelProject();
         unlink($root.'/public/wp-cache.php');
         mkdir($root.'/public/many', 0777, true);
+        $old = 1000000;
 
         for ($i = 0; $i < 2000; $i++) {
             file_put_contents($root.'/public/many/f'.sprintf('%04d', $i).'.php', '<?php');
+            touch($root.'/public/many/f'.sprintf('%04d', $i).'.php', $old);
         }
 
-        // Sorted last in the walk: index.php, many/f0000..f1999, many/zz.php (2002 files).
+        // Sorted last in the walk: index.php, many/f0000..f1999, many/zz.php (2002 files), all old.
         file_put_contents($root.'/public/many/zz.php', '<?php assert(str_rot13($x));');
+        touch($root.'/public/many/zz.php', $old);
+        touch($root.'/public/index.php', $old);
 
         $runner = new ModuleRunner($this->configWithModules($root, 'files'));
+        $stride = \Sitetus\Collector\Modules\FileTrace::CONTENT_SCAN_STRIDE;
+        // Day A: 1001 × 200 is a multiple of 2002, so the start is the top of the list.
+        $dayA = 1001 * 86400;
+        $dayB = $dayA + 86400;
 
-        // Day 0 starts at the top: the cap stops two files short of the shell.
-        $day0 = $runner->run($root, ['detected' => 'laravel'], 0)['files']['php_files'];
+        $this->assertSame(0, \Sitetus\Collector\Modules\FileTrace::contentScanOffset(2002, $dayA));
+        $this->assertSame($stride, \Sitetus\Collector\Modules\FileTrace::contentScanOffset(2002, $dayB));
 
-        $this->assertSame(2002, $day0['count']);
-        $this->assertSame(0, \Sitetus\Collector\Modules\FileTrace::contentScanOffset(2002, 0));
-        $this->assertLessThanOrEqual(2000, $day0['suspicious']['inspected']);
-        $this->assertTrue($day0['suspicious']['partial']);
+        // Day A starts at the top: the cap stops two files short of the shell.
+        $runA = $runner->run($root, ['detected' => 'laravel'], $dayA)['files']['php_files'];
 
-        if ($day0['suspicious']['inspected'] === 2000 && ! $day0['budget_exhausted']) {
-            $this->assertSame(0, $day0['suspicious']['count']);
+        $this->assertSame(2002, $runA['count']);
+        $this->assertLessThanOrEqual(2000, $runA['suspicious']['inspected']);
+        $this->assertTrue($runA['suspicious']['partial']);
+
+        if ($runA['suspicious']['inspected'] === 2000 && ! $runA['budget_exhausted']) {
+            $this->assertSame(0, $runA['suspicious']['count']);
         }
 
-        // Day 1 starts CONTENT_SCAN_STRIDE files further and reaches the tail.
-        $day1 = $runner->run($root, ['detected' => 'laravel'], 86400)['files']['php_files'];
+        // Day B starts CONTENT_SCAN_STRIDE files further and reaches the tail.
+        $runB = $runner->run($root, ['detected' => 'laravel'], $dayB)['files']['php_files'];
 
-        $this->assertSame(\Sitetus\Collector\Modules\FileTrace::CONTENT_SCAN_STRIDE, \Sitetus\Collector\Modules\FileTrace::contentScanOffset(2002, 86400));
-        $this->assertTrue($day1['suspicious']['partial']);
+        $this->assertTrue($runB['suspicious']['partial']);
 
-        if ($day1['suspicious']['inspected'] >= 2002 - \Sitetus\Collector\Modules\FileTrace::CONTENT_SCAN_STRIDE) {
-            $this->assertSame(['many/zz.php'], $day1['suspicious']['names']);
+        if ($runB['suspicious']['inspected'] >= 2002 - $stride) {
+            $this->assertSame(['many/zz.php'], $runB['suspicious']['names']);
+            $this->assertSame(['eval_decoder'], $runB['suspicious']['rules']);
         }
+
+        // A file changed in the last seven days is read first on every pull, whatever the day's start.
+        touch($root.'/public/many/zz.php', $dayA - 3600);
+        $fresh = $runner->run($root, ['detected' => 'laravel'], $dayA)['files']['php_files'];
+
+        $this->assertSame(1, $fresh['recent']['count']);
+        $this->assertSame(['many/zz.php'], $fresh['suspicious']['names']);
     }
 
     /**

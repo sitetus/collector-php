@@ -52,13 +52,14 @@ final class FileTrace
      * @var array<int, string>
      */
     private const SUSPICIOUS_PATTERNS = [
-        '/\b(?:eval|assert)\s*\(\s*(?:@\s*)?(?:base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|rawurldecode|hex2bin|convert_uu)\s*\(/i',
-        '/\b(?:eval|assert)\s*\(\s*(?:@\s*)?\$_(?:POST|GET|REQUEST|COOKIE|SERVER)\b/i',
-        '/\$_(?:POST|GET|REQUEST|COOKIE)\s*\[[^\]]{1,40}\]\s*\(/i',
-        '/\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*(?:@\s*)?\$_(?:POST|GET|REQUEST|COOKIE)\b/i',
-        '/\bpreg_replace\s*\(\s*["\'][^"\']*\/[a-z]*e[a-z]*["\']/i',
-        '/\bcreate_function\s*\(\s*["\']["\']\s*,\s*(?:base64_decode|gzinflate|str_rot13)/i',
-        '/[A-Za-z0-9+\/]{800,}={0,2}/',
+        // 0.7.3: keyed by rule id; the id leaves with the name so the panel can weigh it.
+        'eval_decoder' => '/\b(?:eval|assert)\s*\(\s*(?:@\s*)?(?:base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|rawurldecode|hex2bin|convert_uu)\s*\(/i',
+        'eval_request' => '/\b(?:eval|assert)\s*\(\s*(?:@\s*)?\$_(?:POST|GET|REQUEST|COOKIE|SERVER)\b/i',
+        'request_call' => '/\$_(?:POST|GET|REQUEST|COOKIE)\s*\[[^\]]{1,40}\]\s*\(/i',
+        'shell_request' => '/\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*(?:@\s*)?\$_(?:POST|GET|REQUEST|COOKIE)\b/i',
+        'preg_eval' => '/\bpreg_replace\s*\(\s*["\'][^"\']*\/[a-z]*e[a-z]*["\']/i',
+        'create_function' => '/\bcreate_function\s*\(\s*["\']["\']\s*,\s*(?:base64_decode|gzinflate|str_rot13)/i',
+        'long_base64' => '/[A-Za-z0-9+\/]{800,}={0,2}/',
     ];
 
     /**
@@ -473,7 +474,7 @@ final class FileTrace
             }
 
             $mtime = (int) @filemtime($absolute);
-            $files[] = [$absolute, $relative];
+            $files[] = [$absolute, $relative, $mtime];
             hash_update($fingerprint, $relative.'|'.$mtime."\n");
 
             if ($mtime >= $threshold) {
@@ -483,30 +484,45 @@ final class FileTrace
         }, ['vendor', 'node_modules', '.git']);
 
         $count = count($files);
-        $suspicious = [];
+        $matches = [];
         $suspiciousCount = 0;
         $inspected = 0;
-        $offset = self::contentScanOffset($count, $now);
         $deadline = microtime(true) + self::CONTENT_SCAN_SECONDS;
 
         // 0.4.0: web-shell / injected-code signatures in the head and tail of
-        // the file (read locally, only a name leaves). 0.7.3: the list is
-        // walked circularly from a daily moving start under its own budget.
-        for ($step = 0; $step < min($count, self::CONTENT_SCAN_MAX_FILES); $step++) {
+        // the file (read locally, only a name leaves). 0.7.3: files changed in
+        // the last RECENT_DAYS are read on every pull (a freshly dropped file
+        // never waits for its turn); the rest is walked circularly from a
+        // daily moving start, all under one budget and one cap.
+        $queue = [];
+        $rest = [];
+
+        foreach ($files as $entry) {
+            $entry[2] >= $threshold ? $queue[] = $entry : $rest[] = $entry;
+        }
+
+        $offset = self::contentScanOffset(count($rest), $now);
+
+        for ($step = 0, $total = count($rest); $step < $total; $step++) {
+            $queue[] = $rest[($offset + $step) % $total];
+        }
+
+        foreach (array_slice($queue, 0, self::CONTENT_SCAN_MAX_FILES) as $entry) {
             if (microtime(true) > $deadline) {
                 break;
             }
 
-            list($absolute, $relative) = $files[($offset + $step) % $count];
             $inspected++;
+            $rule = $this->suspiciousRule($entry[0]);
 
-            if ($this->hasSuspiciousCode($absolute)) {
+            if ($rule !== null) {
                 $suspiciousCount++;
-                Scanner::push($suspicious, Scanner::safeName($relative));
+                $matches[Scanner::safeName($entry[1])] = $rule;
             }
         }
 
-        sort($suspicious);
+        ksort($matches);
+        $matches = array_slice($matches, 0, Scanner::LIST_MAX, true);
 
         // 0.7.3: the panel must know when "nothing matched" covers only part of
         // the set — the walk stopped at its budget or the content scan at its cap.
@@ -516,7 +532,15 @@ final class FileTrace
             'count' => $count,
             'set_hash' => hash_final($fingerprint),
             'recent' => ['count' => $recentCount, 'names' => $recent],
-            'suspicious' => ['count' => $suspiciousCount, 'names' => $suspicious, 'inspected' => $inspected, 'partial' => $partial],
+            'suspicious' => [
+                'count' => $suspiciousCount,
+                'names' => array_keys($matches),
+                // 0.7.3: which signature fired per name (same order as names), so the
+                // panel can weigh a rule without a new collector release.
+                'rules' => array_values($matches),
+                'inspected' => $inspected,
+                'partial' => $partial,
+            ],
             'budget_exhausted' => $scanner->exhausted(),
         ];
     }
@@ -546,18 +570,18 @@ final class FileTrace
      * functions or shell calls, preg_replace /e, create_function, and
      * very long base64 blobs. First and last 8 KB only.
      */
-    private function hasSuspiciousCode(string $absolute): bool
+    private function suspiciousRule(string $absolute): ?string
     {
         // 0.5.1: regular files only (a FIFO would block the pull).
         if (! @is_file($absolute) || @is_link($absolute)) {
-            return false;
+            return null;
         }
 
         $size = (int) @filesize($absolute);
         $handle = @fopen($absolute, 'rb');
 
         if ($handle === false) {
-            return false;
+            return null;
         }
 
         $sample = (string) fread($handle, self::CONTENT_SCAN_BYTES);
@@ -571,7 +595,7 @@ final class FileTrace
         if ($haltAt !== null) {
             fclose($handle);
 
-            return $this->matchesSignature(substr($sample, 0, $haltAt));
+            return $this->signatureRule(substr($sample, 0, $haltAt));
         }
 
         if ($size > self::CONTENT_SCAN_BYTES * 2) {
@@ -583,7 +607,7 @@ final class FileTrace
 
         fclose($handle);
 
-        return $this->matchesSignature($sample);
+        return $this->signatureRule($sample);
     }
 
     /**
@@ -611,14 +635,17 @@ final class FileTrace
         return null;
     }
 
-    private function matchesSignature(string $sample): bool
+    /**
+     * The id of the first signature the sample matches, or null.
+     */
+    private function signatureRule(string $sample): ?string
     {
-        foreach (self::SUSPICIOUS_PATTERNS as $pattern) {
+        foreach (self::SUSPICIOUS_PATTERNS as $rule => $pattern) {
             if (preg_match($pattern, $sample) === 1) {
-                return true;
+                return (string) $rule;
             }
         }
 
-        return false;
+        return null;
     }
 }
