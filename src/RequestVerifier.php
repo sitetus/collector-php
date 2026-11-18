@@ -4,10 +4,17 @@ namespace Sitetus\Collector;
 
 /**
  * Verification order and responses (binding):
- *  1. signature present + project_key match + valid signature  → else 404
- *  2. expires_at passed / sleep mode                           → 404
- *  3. time window ±10 min                                      → 403 skew (+ server time)
- *  4. nonce replay / unwritable store                          → 403 nonce | nonce-store
+ *  1. a signature header missing / project_key mismatch         → 404
+ *  2. the file's algorithm cannot be verified on this server    → 403 unsupported-algo (+ supported list)
+ *  3. another algorithm requested / signature does not verify   → 403 signature
+ *  4. expires_at passed / sleep mode                            → 404
+ *  5. time window ±10 min                                       → 403 skew (+ server time)
+ *  6. nonce replay / unwritable store                           → 403 nonce | nonce-store
+ *
+ * 0.7.4: steps 2 and 3 used to be an anonymous 404. They answer only a
+ * caller that already sent the right project key, carry fixed words and
+ * are decided before the nonce store is opened — a request without a valid
+ * signature neither reads nor writes it.
  *
  * No request parameter is ever used as a path, command or include target.
  */
@@ -23,10 +30,38 @@ final class RequestVerifier
     /** @var NonceStore */
     private $nonceStore;
 
-    public function __construct(Config $config, NonceStore $nonceStore)
+    /** @var array<int, string> */
+    private $supportedAlgos;
+
+    /**
+     * @param array<int, string>|null $supportedAlgos algorithms this server can verify; null = detect
+     */
+    public function __construct(Config $config, NonceStore $nonceStore, ?array $supportedAlgos = null)
     {
         $this->config = $config;
         $this->nonceStore = $nonceStore;
+        $this->supportedAlgos = $supportedAlgos !== null ? array_values($supportedAlgos) : self::supportedAlgorithms();
+    }
+
+    /**
+     * The signature algorithms this PHP can verify: Ed25519 needs the sodium
+     * extension, RSA-SHA256 needs openssl. Fixed names only.
+     *
+     * @return array<int, string>
+     */
+    public static function supportedAlgorithms(): array
+    {
+        $algos = [];
+
+        if (function_exists('sodium_crypto_sign_verify_detached')) {
+            $algos[] = 'ed25519';
+        }
+
+        if (function_exists('openssl_verify') && function_exists('openssl_pkey_get_public')) {
+            $algos[] = 'rsa-sha256';
+        }
+
+        return $algos;
     }
 
     /**
@@ -41,8 +76,9 @@ final class RequestVerifier
         $nonce = isset($headers['x-sitetus-nonce']) ? (string) $headers['x-sitetus-nonce'] : '';
         $algo = isset($headers['x-sitetus-algo']) ? (string) $headers['x-sitetus-algo'] : '';
 
-        // 1. Signature gate — any failure is an anonymous 404.
-        if ($signature === '' || $projectKey === '' || $timestamp === '' || $nonce === '') {
+        // 1. Anonymous gate — a missing header or another project key is a
+        //    404 without a word, as if the file did not exist.
+        if ($signature === '' || $projectKey === '' || $timestamp === '' || $nonce === '' || $algo === '') {
             return [404, []];
         }
 
@@ -50,17 +86,8 @@ final class RequestVerifier
             return [404, []];
         }
 
-        if (! hash_equals($this->config->algo, $algo)) {
-            return [404, []];
-        }
-
-        $material = self::signatureMaterial($method, $path, $projectKey, $timestamp, $nonce, $body);
-
-        if (! $this->signatureValid($material, $signature)) {
-            return [404, []];
-        }
-
-        // 2. Lifecycle: expired package or sleep mode. Sleep is
+        // 2. Lifecycle: an expired package or sleep mode stays a 404 for
+        //    everyone, the holder of the project key included. Sleep is
         //    permanent by design; the exit is a fresh package from the panel.
         if ($this->config->expiresAt !== null && $now >= $this->config->expiresAt) {
             return [404, []];
@@ -72,7 +99,28 @@ final class RequestVerifier
             return [404, []];
         }
 
-        // 3. Time window.
+        // 3. The caller knows the project key: say why the signature cannot
+        //    be accepted. Fixed words only, and nothing is written to the
+        //    nonce store until the signature has verified.
+        if (! in_array($this->config->algo, $this->supportedAlgos, true)) {
+            return [403, [
+                'X-Sitetus-Error' => 'unsupported-algo',
+                'X-Sitetus-Supports' => implode(',', $this->supportedAlgos),
+            ]];
+        }
+
+        // 4. Signature.
+        if (! hash_equals($this->config->algo, $algo)) {
+            return [403, ['X-Sitetus-Error' => 'signature']];
+        }
+
+        $material = self::signatureMaterial($method, $path, $projectKey, $timestamp, $nonce, $body);
+
+        if (! $this->signatureValid($material, $signature)) {
+            return [403, ['X-Sitetus-Error' => 'signature']];
+        }
+
+        // 5. Time window.
         if (abs($now - (int) $timestamp) > self::SKEW_SECONDS) {
             return [403, [
                 'X-Sitetus-Error' => 'skew',
@@ -80,7 +128,7 @@ final class RequestVerifier
             ]];
         }
 
-        // 4. Nonce.
+        // 6. Nonce.
         $fresh = $this->nonceStore->registerNonce($nonce, $now);
 
         if ($fresh === null) {

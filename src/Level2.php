@@ -366,11 +366,112 @@ final class Level2
             } catch (\Throwable $exception) {
                 $checks[] = ['id' => 'failed_jobs', 'status' => 'unknown', 'message' => 'msg.not_readable'];
             }
+
+            $scope = $this->databaseAccountScope($connection);
+
+            if ($scope !== null) {
+                $checks[] = ['id' => 'db_account_scope', 'status' => 'ok', 'value' => $scope];
+            }
         } catch (\Throwable $exception) {
             $checks[] = ['id' => 'db_connectivity', 'status' => 'fail'];
         }
 
         return $checks;
+    }
+
+    /**
+     * 0.7.4: from where the application's database account may connect
+     * (MySQL and MariaDB only). The server's own answer to CURRENT_USER() is
+     * reduced to one word on the spot; the account name and the host never
+     * leave the server. Another driver, a database on another server or any
+     * failure sends no row at all: the row is read together with this
+     * server's own MySQL port.
+     *
+     * @param mixed $connection
+     */
+    private function databaseAccountScope($connection): ?string
+    {
+        try {
+            $driver = strtolower((string) $connection->getDriverName());
+
+            if ($driver !== 'mysql' && $driver !== 'mariadb') {
+                return null;
+            }
+
+            $socket = $connection->getConfig('unix_socket');
+
+            if (! (is_string($socket) && $socket !== '') && ! self::isLocalDatabaseHost($connection->getConfig('host'))) {
+                return null;
+            }
+
+            $statement = $connection->getPdo()->query('SELECT CURRENT_USER()');
+
+            if (! is_object($statement)) {
+                return null;
+            }
+
+            $account = $statement->fetchColumn();
+
+            return is_string($account) ? self::accountScope($account) : null;
+        } catch (\Throwable $exception) {
+            return null;
+        }
+    }
+
+    /**
+     * The host part of a `user@host` account (the text after the last `@`)
+     * as one word: `local` for localhost, 127.0.0.1 and ::1; `any` for the
+     * bare wildcard `%`; `specific` for everything else, a pattern that
+     * narrows the wildcard (`10.0.%`, `%.example.test`) included.
+     * Null when there is no host part to read.
+     */
+    public static function accountScope(string $currentUser): ?string
+    {
+        $at = strrpos($currentUser, '@');
+
+        if ($at === false) {
+            return null;
+        }
+
+        $host = strtolower(trim(trim(substr($currentUser, $at + 1)), '`\'"'));
+
+        if ($host === '') {
+            return null;
+        }
+
+        if (in_array($host, ['localhost', '127.0.0.1', '::1'], true)) {
+            return 'local';
+        }
+
+        if ($host === '%') {
+            return 'any';
+        }
+
+        return 'specific';
+    }
+
+    /**
+     * Whether a configured database host is this server: localhost, a
+     * loopback address or a socket path (WordPress writes it after a colon).
+     * Anything else — another server, a list of hosts — is not.
+     *
+     * @param mixed $host
+     */
+    public static function isLocalDatabaseHost($host): bool
+    {
+        if (! is_string($host)) {
+            return false;
+        }
+
+        $host = strtolower(trim($host));
+
+        if ($host === '' || $host[0] === '/' || strpos($host, ':/') !== false) {
+            return $host !== '';
+        }
+
+        $name = $host[0] === '[' ? trim((string) strstr($host, ']', true), '[') : (substr_count($host, ':') === 1 ? (string) strstr($host, ':', true) : $host);
+
+        return in_array($name, ['localhost', '127.0.0.1', '::1'], true);
     }
 
     /**

@@ -18,10 +18,10 @@ The collector is a web-exposed file on a customer's server, in the middle of a h
 
 | Threat | Measure |
 |---|---|
-| Unauthorised request → data disclosure | Ed25519 / RSA signature verification; every invalid request gets a bodyless **404** (as if the file did not exist). An authorisation bypass is the most critical bug class for this product |
+| Unauthorised request → data disclosure | Ed25519 / RSA signature verification; a request without the signature headers or with another project key gets a bodyless **404** (as if the file did not exist); one that carries the right project key and fails gets a bodyless **403** with a fixed reason word, decided before anything is written to the nonce store; an expired or sleeping installation answers 404 to everyone. An authorisation bypass is the most critical bug class for this product |
 | Key or identifier leak through a timing side channel | Constant-time comparison (`hash_equals`) |
 | Replay | ±10-minute time window plus a nonce store (file-locked, pruned, 1000 entries) |
-| Leak of a panel key | Signatures use a key pair **per installation**; the blast radius of a leak is one installation, re-keyed from the panel with one click (the old file falls back to 404) |
+| Leak of a panel key | Signatures use a key pair **per installation**; the blast radius of a leak is one installation, re-keyed from the panel with one click (the old file refuses every request signed with the new key) |
 | Orphaned or forgotten file | Optional `expires_at`, and **permanent sleep** (404) after 90 days without a valid request; the way out is installing a new package |
 | Code or path injection through request data | No request parameter is ever used as a file path, a command or an include target |
 | Data-minimisation violation | The envelope carries only numbers, statuses and name/version pairs; from the configuration only a fixed allow-list of flags; fixed message keys (`msg.*`) instead of free text |

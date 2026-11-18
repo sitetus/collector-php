@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.4 — 2026-11-18
+
+Four new readings about where the site sits on its server, and a signature gate that says why it refused a request from the panel.
+
+- New Level 1 row `hosting_layout`: whether a folder on the project's path is named `public_html` or `private_html` (the folders a web server's per-account address serves), whether the web server's document root is the project root itself, the first 12 characters of a keyed hash (HMAC-SHA-256 with the installation's project key) of the account the PHP process runs as, and the hosting panel as one word (`cpanel`, `plesk`, `directadmin`, `unknown`). The row is always `ok`: the collector reports, the panel judges. No path and no account name leave the server.
+- New Level 1 row `os_release`: the `ID` and `VERSION_ID` values of `/etc/os-release` (for example `ubuntu 22.04`), so the panel can match the operating system against its end-of-life dates. No other line of the file is read into the envelope; a value outside the expected alphabet is dropped, not sent. Unreadable file or no `ID`: `unknown`.
+- `listening_ports` also reports the Docker API (2375) and etcd (2379) when they listen on every interface; both answer without authentication.
+- New Level 2 row `db_account_scope` (MySQL and MariaDB): the host part of the server's answer to `CURRENT_USER()` reduced to one word — `local` (localhost, 127.0.0.1, ::1), `any` (the bare wildcard `%`) or `specific` (a named host, an address, or a pattern that narrows the wildcard). The account name and the host are never sent; on another driver, a database on another server or a failed query the row is absent.
+- Signature gate: a request that carries the installation's project key and still cannot be accepted now gets a bodiless `403` with a reason instead of a `404` — `X-Sitetus-Error: unsupported-algo` with `X-Sitetus-Supports: <algorithms this PHP can verify>` when the file's signature algorithm cannot be verified on the server (Ed25519 without the `sodium` extension), `X-Sitetus-Error: signature` when the signature does not verify. A missing header or another project key is still an empty `404`; `skew`, `nonce-store` and `nonce` are unchanged. An expired or sleeping installation still answers `404` to everyone. A request without a valid signature writes nothing to the nonce store.
+- Envelope format and signature material are unchanged. The new rows can carry `null` in their detail, which a panel older than this release rejects: the panel is updated first.
+
 ## 0.7.3 — 2026-11-17
 
 `files` module: the web-shell signature scan tells a partial scan from a clean one and no longer reads data stored behind `__halt_compiler()`.

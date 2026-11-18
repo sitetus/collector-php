@@ -82,6 +82,42 @@ final class CollectorRunTest extends TestCase
         $this->assertSame([], $result['headers']);
     }
 
+    /**
+     * 0.7.4: the refusal a caller with the right project key gets is a
+     * status and one fixed word — no body, nothing about the server.
+     */
+    public function testBadSignatureWithTheRightProjectKeyIsABodyless403WithOneFixedWord(): void
+    {
+        list($config, $secret, $installDir) = Support::ed25519Config();
+        $this->dirs[] = $installDir;
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        $headers['x-sitetus-signature'] = base64_encode(str_repeat('x', 64));
+
+        $result = (new Collector($config))->run('GET', '/x/', $headers, '', $now, __FILE__);
+
+        $this->assertSame(403, $result['status']);
+        $this->assertNull($result['body']);
+        $this->assertSame(['X-Sitetus-Error' => 'signature'], $result['headers']);
+    }
+
+    public function testBadSignatureWithAnotherProjectKeyStaysABodylessAnonymous404(): void
+    {
+        list($config, $secret, $installDir) = Support::ed25519Config();
+        $this->dirs[] = $installDir;
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        $headers['x-sitetus-key'] = 'someone-elses-key000';
+
+        $result = (new Collector($config))->run('GET', '/x/', $headers, '', $now, __FILE__);
+
+        $this->assertSame(404, $result['status']);
+        $this->assertNull($result['body']);
+        $this->assertSame([], $result['headers']);
+    }
+
     public function testBuiltSingleFileParsesAndExposesClasses(): void
     {
         $output = Support::tmpDir('build').'/index.php';

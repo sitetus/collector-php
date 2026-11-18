@@ -8,7 +8,8 @@ use Sitetus\Collector\Modules\ModuleRunner;
  * Orchestration: verify the request, collect Level 1, attempt
  * Level 2 only for verified requests on detected Laravel projects, respond
  * with the JSON envelope. The 404 path carries no body and no custom
- * headers — indistinguishable from a missing file.
+ * headers — indistinguishable from a missing file. A refusal the verifier
+ * explains (403) carries no body either: only its fixed X-Sitetus-* words.
  */
 final class Collector
 {
@@ -98,7 +99,7 @@ final class Collector
         }
 
         $inventory = new Inventory($this->config);
-        $health = new Health();
+        $health = new Health($this->config->projectKey);
 
         $root = $inventory->rootPath();
         $framework = $inventory->detectFramework($root);

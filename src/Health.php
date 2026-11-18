@@ -15,6 +15,35 @@ final class Health
     public const WORDPRESS_MAINTENANCE_SECONDS = 600;
 
     /**
+     * Services `listening_ports` reports when they listen on every
+     * interface. 0.7.4 adds the Docker API and etcd, which answer without
+     * authentication.
+     */
+    public const WATCHED_SERVICES = [
+        6379 => 'redis',
+        3306 => 'mysql',
+        5432 => 'postgres',
+        11211 => 'memcached',
+        27017 => 'mongodb',
+        9200 => 'elasticsearch',
+        2375 => 'docker_api',
+        2379 => 'etcd',
+    ];
+
+    /**
+     * @var string
+     */
+    private $hashKey;
+
+    /**
+     * @param string $hashKey the installation's project key; keys the account hash of `hosting_layout`
+     */
+    public function __construct(string $hashKey = '')
+    {
+        $this->hashKey = $hashKey;
+    }
+
+    /**
      * @return array<int, array<string, mixed>>
      */
     public function level1Checks(?string $root): array
@@ -35,12 +64,16 @@ final class Health
             $checks[] = $this->logSize($root);
             // 0.7.0: maintenance mode from the marker file, no bootstrap needed.
             $checks[] = $this->maintenanceMode($root);
+            // 0.7.4: where the project sits relative to the web folder.
+            $checks[] = $this->hostingLayout($root);
         }
 
         $checks[] = $this->originTlsExpiry();
         // 0.3.0: php.ini hygiene and locally listening services.
         $checks[] = $this->phpIni();
         $checks[] = $this->listeningPorts();
+        // 0.7.4: distribution id and version for end-of-life matching.
+        $checks[] = $this->osRelease();
         // 0.4.0: OPcache state and CPU load per core.
         $checks[] = $this->opcache();
         $checks[] = $this->loadAverage();
@@ -275,14 +308,7 @@ final class Health
      */
     public function listeningPorts(): array
     {
-        $services = [
-            6379 => 'redis',
-            3306 => 'mysql',
-            5432 => 'postgres',
-            11211 => 'memcached',
-            27017 => 'mongodb',
-            9200 => 'elasticsearch',
-        ];
+        $services = self::WATCHED_SERVICES;
         $tables = ['/proc/net/tcp', '/proc/net/tcp6'];
         $readable = false;
         $exposed = [];
@@ -336,6 +362,234 @@ final class Health
             'value' => count($exposed),
             'detail' => ['exposed' => implode(',', $exposed)],
         ];
+    }
+
+    /**
+     * 0.7.4: where the project sits on the host. Four facts, no verdict (the
+     * status is always ok): whether a folder on the project's path carries a
+     * web-folder name, whether the web server's document root is the project
+     * root itself, a 12-character keyed hash prefix of the account the
+     * process runs as, and the hosting panel as one word. No path, no account name
+     * and no host name leaves the server.
+     *
+     * @return array<string, mixed>
+     */
+    public function hostingLayout(string $root): array
+    {
+        $resolved = self::resolvedPath($root);
+        $inWebFolder = self::pathHasWebFolder($root) || ($resolved !== null && self::pathHasWebFolder($resolved));
+        $documentRoot = isset($_SERVER['DOCUMENT_ROOT']) && is_string($_SERVER['DOCUMENT_ROOT']) ? $_SERVER['DOCUMENT_ROOT'] : null;
+
+        return [
+            'id' => 'hosting_layout',
+            'status' => 'ok',
+            'value' => $inWebFolder,
+            'detail' => [
+                'project_in_web_folder' => $inWebFolder,
+                'docroot_is_project_root' => self::docrootIsProjectRoot($documentRoot, $root),
+                'account_hash' => self::accountHash(self::processAccountName(), $this->hashKey),
+                'panel' => self::hostingPanel(),
+            ],
+        ];
+    }
+
+    /**
+     * True when one of the folders on the path — the last one included — is
+     * named public_html or private_html (case-insensitive, whole name
+     * only): the folders a web server's per-account address serves. Other
+     * web-folder names (httpdocs, htdocs, www) are not reachable that way
+     * and are not counted.
+     */
+    public static function pathHasWebFolder(string $path): bool
+    {
+        $segments = preg_split('#[/\\\\]+#', $path);
+
+        foreach (is_array($segments) ? $segments : [] as $segment) {
+            if (in_array(strtolower($segment), ['public_html', 'private_html'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the web server's document root is the project root itself;
+     * null when the document root is not known or either path cannot be
+     * resolved (open_basedir). Both paths are compared after realpath().
+     */
+    public static function docrootIsProjectRoot(?string $documentRoot, string $root): ?bool
+    {
+        if ($documentRoot === null || trim($documentRoot) === '') {
+            return null;
+        }
+
+        $resolvedDocumentRoot = self::resolvedPath($documentRoot);
+        $resolvedRoot = self::resolvedPath($root);
+
+        if ($resolvedDocumentRoot === null || $resolvedRoot === null) {
+            return null;
+        }
+
+        // Windows file systems do not tell the case of a name apart.
+        if (DIRECTORY_SEPARATOR === '\\') {
+            return strcasecmp($resolvedDocumentRoot, $resolvedRoot) === 0;
+        }
+
+        return $resolvedDocumentRoot === $resolvedRoot;
+    }
+
+    /**
+     * First 12 hex characters of the HMAC-SHA-256 of an account name, keyed
+     * with the installation's project key, so the same name gives another
+     * value on every installation; null when the name or the key is not
+     * known. The name itself never leaves the server.
+     */
+    public static function accountHash(?string $name, string $key): ?string
+    {
+        if ($name === null || $name === '' || $key === '') {
+            return null;
+        }
+
+        return substr(hash_hmac('sha256', $name, $key), 0, 12);
+    }
+
+    /**
+     * The hosting panel, from the presence of its install folder — one word
+     * of a fixed list. `$exists` answers "is this path a directory" (tests).
+     */
+    public static function hostingPanel(?callable $exists = null): string
+    {
+        $exists = $exists !== null ? $exists : static function (string $path): bool {
+            return function_exists('is_dir') && @is_dir($path);
+        };
+
+        $panels = [
+            'cpanel' => ['/usr/local/cpanel'],
+            'plesk' => ['/usr/local/psa', '/opt/psa'],
+            'directadmin' => ['/usr/local/directadmin'],
+        ];
+
+        foreach ($panels as $panel => $directories) {
+            foreach ($directories as $directory) {
+                try {
+                    if ($exists($directory) === true) {
+                        return $panel;
+                    }
+                } catch (\Throwable $exception) {
+                    continue;
+                }
+            }
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * Name of the account the process runs as: the effective user from
+     * posix where the extension is there, else the owner of the running
+     * script. Used locally for the hash only.
+     */
+    private static function processAccountName(): ?string
+    {
+        try {
+            if (function_exists('posix_geteuid') && function_exists('posix_getpwuid')) {
+                // Before PHP 8 a disabled function still exists and answers
+                // null: without the check that would read as user id 0.
+                $uid = @posix_geteuid();
+                $entry = is_int($uid) ? @posix_getpwuid($uid) : null;
+
+                if (is_array($entry) && isset($entry['name']) && is_string($entry['name']) && $entry['name'] !== '') {
+                    return $entry['name'];
+                }
+            }
+
+            if (function_exists('get_current_user')) {
+                $name = @get_current_user();
+
+                if (is_string($name) && $name !== '') {
+                    return $name;
+                }
+            }
+        } catch (\Throwable $exception) {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static function resolvedPath(string $path): ?string
+    {
+        if (! function_exists('realpath')) {
+            return null;
+        }
+
+        $resolved = @realpath($path);
+
+        return is_string($resolved) && $resolved !== '' ? $resolved : null;
+    }
+
+    /**
+     * 0.7.4: the distribution's id and version from /etc/os-release, so the
+     * panel can match the operating system against its end-of-life dates.
+     * Only the ID and VERSION_ID values are taken; the host name, the kernel
+     * and every other line stay on the server.
+     *
+     * @return array<string, mixed>
+     */
+    public function osRelease(string $path = '/etc/os-release'): array
+    {
+        if (! @is_readable($path) || ! @is_file($path)) {
+            return [
+                'id' => 'os_release',
+                'status' => 'unknown',
+                'message' => PHP_OS_FAMILY === 'Linux' ? 'msg.not_readable' : 'msg.unsupported_os',
+            ];
+        }
+
+        $parsed = self::parseOsRelease((string) @file_get_contents($path, false, null, 0, 65536));
+
+        if ($parsed === null) {
+            return ['id' => 'os_release', 'status' => 'unknown', 'message' => 'msg.not_readable'];
+        }
+
+        return [
+            'id' => 'os_release',
+            'status' => 'ok',
+            'value' => $parsed['version_id'] !== null ? $parsed['id'].' '.$parsed['version_id'] : $parsed['id'],
+            'detail' => $parsed,
+        ];
+    }
+
+    /**
+     * ID and VERSION_ID of an os-release file; every other key is ignored.
+     * A value outside the expected alphabet is dropped whole, never trimmed
+     * into shape: null without a usable ID, `version_id` null without a
+     * usable VERSION_ID (rolling distributions have none).
+     *
+     * @return array{id: string, version_id: ?string}|null
+     */
+    public static function parseOsRelease(string $content): ?array
+    {
+        $values = ['ID' => null, 'VERSION_ID' => null];
+
+        foreach (preg_split('/\r\n|\r|\n/', $content) ?: [] as $line) {
+            if (preg_match('/^\s*(ID|VERSION_ID)=(.*)$/', $line, $match) !== 1 || $values[$match[1]] !== null) {
+                continue;
+            }
+
+            $values[$match[1]] = strtolower(trim(trim($match[2]), '"\''));
+        }
+
+        if ($values['ID'] === null || preg_match('/^[a-z0-9._-]{1,32}$/', $values['ID']) !== 1) {
+            return null;
+        }
+
+        $versionId = $values['VERSION_ID'] !== null && preg_match('/^[0-9a-z._-]{1,16}$/', $values['VERSION_ID']) === 1
+            ? $values['VERSION_ID']
+            : null;
+
+        return ['id' => $values['ID'], 'version_id' => $versionId];
     }
 
     private function iniFlag(string $name): bool

@@ -9,7 +9,7 @@ namespace Sitetus\Collector;
  */
 final class Config
 {
-    public const VERSION = '0.7.3';
+    public const VERSION = '0.7.4';
 
     public const SCHEMA_VERSION = 1;
 

@@ -62,12 +62,17 @@ final class RequestVerifierTest extends TestCase
         $headers = Support::signedHeaders($config, $secret, $now);
         $headers['x-sitetus-key'] = 'someone-elses-key000';
 
-        list($status) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
 
         $this->assertSame(404, $status);
+        $this->assertSame([], $extra);
     }
 
-    public function testTamperedMaterialIs404(): void
+    /**
+     * 0.7.4: a caller that sent the right project key is told that the
+     * signature did not verify (until 0.7.3 an anonymous 404).
+     */
+    public function testTamperedMaterialWithTheRightProjectKeyIs403Signature(): void
     {
         list($config, $secret, $this->installDir) = Support::ed25519Config();
 
@@ -75,9 +80,173 @@ final class RequestVerifierTest extends TestCase
         $headers = Support::signedHeaders($config, $secret, $now, null, 'GET', '/x/');
 
         // Signed for /x/ but requested against another path.
-        list($status) = $this->verifier($config)->verify('GET', '/other/', $headers, '', $now);
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/other/', $headers, '', $now);
+
+        $this->assertSame(403, $status);
+        $this->assertSame(['X-Sitetus-Error' => 'signature'], $extra);
+    }
+
+    public function testWrongProjectKeyWithABadSignatureIsStillAnAnonymous404(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        $headers['x-sitetus-key'] = 'someone-elses-key000';
+        $headers['x-sitetus-signature'] = base64_encode(str_repeat('x', 64));
+
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
 
         $this->assertSame(404, $status);
+        $this->assertSame([], $extra);
+    }
+
+    /**
+     * @dataProvider signatureHeaderNames
+     */
+    public function testAMissingSignatureHeaderIsAnAnonymous404EvenWithTheRightProjectKey(string $header): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        unset($headers[$header]);
+
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
+
+        $this->assertSame(404, $status);
+        $this->assertSame([], $extra);
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    public function signatureHeaderNames(): array
+    {
+        return [
+            'signature' => ['x-sitetus-signature'],
+            'timestamp' => ['x-sitetus-timestamp'],
+            'nonce' => ['x-sitetus-nonce'],
+            'algo' => ['x-sitetus-algo'],
+        ];
+    }
+
+    public function testUnverifiableAlgorithmIs403WithTheListThisServerSupports(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+
+        // A server without sodium: only RSA can be verified.
+        $verifier = new RequestVerifier($config, new NonceStore($config->noncePath()), ['rsa-sha256']);
+
+        list($status, $extra) = $verifier->verify('GET', '/x/', $headers, '', $now);
+
+        $this->assertSame(403, $status);
+        $this->assertSame(['X-Sitetus-Error' => 'unsupported-algo', 'X-Sitetus-Supports' => 'rsa-sha256'], $extra);
+    }
+
+    public function testServerThatVerifiesNothingAnswersAnEmptySupportsList(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+
+        $verifier = new RequestVerifier($config, new NonceStore($config->noncePath()), []);
+
+        list($status, $extra) = $verifier->verify('GET', '/x/', $headers, '', $now);
+
+        $this->assertSame(403, $status);
+        $this->assertSame(['X-Sitetus-Error' => 'unsupported-algo', 'X-Sitetus-Supports' => ''], $extra);
+    }
+
+    public function testWrongProjectKeyOnAServerThatVerifiesNothingIsStill404(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        $headers['x-sitetus-key'] = 'someone-elses-key000';
+
+        $verifier = new RequestVerifier($config, new NonceStore($config->noncePath()), []);
+
+        list($status, $extra) = $verifier->verify('GET', '/x/', $headers, '', $now);
+
+        $this->assertSame(404, $status);
+        $this->assertSame([], $extra);
+    }
+
+    public function testRequestNamingAnotherAlgorithmThanTheFileIs403Signature(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        $headers['x-sitetus-algo'] = 'rsa-sha256';
+
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
+
+        $this->assertSame(403, $status);
+        $this->assertSame(['X-Sitetus-Error' => 'signature'], $extra);
+    }
+
+    public function testSupportedAlgorithmsListsOnlyFixedNames(): void
+    {
+        $supported = RequestVerifier::supportedAlgorithms();
+
+        $this->assertContains('ed25519', $supported);
+        $this->assertSame([], array_diff($supported, ['ed25519', 'rsa-sha256']));
+    }
+
+    /**
+     * Replay protection is not weakened by the diagnostics: a request whose
+     * signature does not verify neither creates nor reads the nonce store,
+     * and its nonce stays usable by the request that does verify.
+     */
+    public function testBadSignatureDoesNotTouchTheNonceStore(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+
+        $now = time();
+        $nonce = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+        $valid = Support::signedHeaders($config, $secret, $now, $nonce);
+        $forged = $valid;
+        $forged['x-sitetus-signature'] = base64_encode(str_repeat('x', 64));
+
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/x/', $forged, '', $now);
+
+        $this->assertSame(403, $status);
+        $this->assertSame(['X-Sitetus-Error' => 'signature'], $extra);
+        $this->assertFileDoesNotExist($config->noncePath());
+
+        list($accepted) = $this->verifier($config)->verify('GET', '/x/', $valid, '', $now);
+        $this->assertSame(200, $accepted);
+
+        // The forged copy of an already used nonce is still "signature", never "nonce".
+        list($again, $extra) = $this->verifier($config)->verify('GET', '/x/', $forged, '', $now);
+        $this->assertSame(403, $again);
+        $this->assertSame(['X-Sitetus-Error' => 'signature'], $extra);
+    }
+
+    /**
+     * The lifecycle checks come before the diagnostics: an expired package
+     * stays a 404 for everyone, the holder of the project key included.
+     */
+    public function testExpiredPackageWithABadSignatureStaysA404(): void
+    {
+        list($config, $secret, $this->installDir) = Support::ed25519Config();
+        $config->expiresAt = time() - 10;
+
+        $now = time();
+        $headers = Support::signedHeaders($config, $secret, $now);
+        $headers['x-sitetus-signature'] = base64_encode(str_repeat('x', 64));
+
+        list($status, $extra) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
+
+        $this->assertSame(404, $status);
+        $this->assertSame([], $extra);
     }
 
     public function testClockSkewIs403WithDiagnostics(): void
@@ -228,10 +397,11 @@ final class RequestVerifierTest extends TestCase
         list($status) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
         $this->assertSame(200, $status);
 
-        // Corrupted signature falls back to 404.
+        // 0.7.4: a corrupted signature under the right project key is named.
         $headers['x-sitetus-signature'] = base64_encode('garbage-signature-value');
-        list($bad) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
-        $this->assertSame(404, $bad);
+        list($bad, $extra) = $this->verifier($config)->verify('GET', '/x/', $headers, '', $now);
+        $this->assertSame(403, $bad);
+        $this->assertSame(['X-Sitetus-Error' => 'signature'], $extra);
     }
 
     /**
