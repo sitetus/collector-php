@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.5 — 2026-11-18
+
+A new optional module, off unless the installation selects it, says whether the Laravel application key is one that is already publicly known. The comparison happens on the server; one yes/no leaves it.
+
+- New opt-in module `secret_check` (Laravel only). Like every module it is not in the file unless it was selected when the package was generated; without it the collector reads no configuration value for its content, as before, and the file carries neither the module's code nor its list.
+- With the module selected, `APP_KEY` (`app.key`) is the only configuration value read for its content, in memory only. It is hashed (SHA-256) and the first 6 bytes are looked up in a sorted list of 1,258 such truncated hashes of publicly known keys — product defaults, keys from tutorials, keys published in public repositories — embedded in the module's part of the file. The key is compared exactly as configured, `base64:` prefix included, which is the form the public lists hold; the decoded key bytes are not hashed.
+- The module's section in `modules` is `{"public": {"app_key": true}}` or `{"public": {"app_key": false}}`. When there is nothing to check it is `{"unsupported": "<reason>"}` instead: `no_application` (not Laravel, or the application did not boot), `no_config` (the configuration could not be read), `no_secret` (`APP_KEY` is not set or is not a string) or `no_data` (the list could not be read — never reported as "not public").
+- The key, its length, its hash and any part of its hash never leave the server and are never written or logged. The embedded list contains no key, only truncated hashes.
+- A "yes" tells the panel that the key is an entry of a public list. A key on no list can match by chance with a probability of 1,258 in 2^48 (about 1 in 224 billion).
+- The list is derived from the MIT-licensed key lists of `synacktiv/laravel-crypto-killer` (Copyright (c) 2024 Synacktiv). The plain lists are not in the repository; `src/data/NOTICE` names the source, its licence and the commit used, and `build/known-secrets.php` regenerates the data file.
+- Selecting the module makes the file about 15 KB larger; a file without it is the size it was.
+- Envelope format and signature material are unchanged, and an installation that does not select the module sends exactly what 0.7.4 sent. The module key is new: the panel is updated before it offers the module.
+
 ## 0.7.4 — 2026-11-18
 
 Four new readings about where the site sits on its server, and a signature gate that says why it refused a request from the panel.

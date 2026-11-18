@@ -31,6 +31,132 @@ final class BuildArtifactTest extends TestCase
         }
     }
 
+    /**
+     * 0.7.5: `secret_check` is opt-in. A file built without it holds neither
+     * the lookup nor the list and answers `unavailable` even when the
+     * configuration lists the module; a file built with it answers from the
+     * list it carries, in a fresh process that has nothing but that file.
+     * The key here is made up.
+     */
+    public function testSecretCheckCodeIsOnlyInAFileBuiltWithTheModule(): void
+    {
+        $repo = dirname(__DIR__, 2);
+        $work = Support::tmpDir('build');
+        $this->dirs[] = $work;
+
+        $built = $work.'/built.php';
+        exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($repo.'/build/build.php').' '.escapeshellarg($built).' 2>&1', $buildOutput, $buildExit);
+        $this->assertSame(0, $buildExit, implode("\n", $buildOutput));
+
+        $source = (string) file_get_contents($built);
+
+        // The panel's strip, keeping only the modules named.
+        $keep = static function (array $selected) use ($source): string {
+            return (string) preg_replace_callback(
+                '/\/\* SITETUS_MODULE_START:([a-z_]+) \*\/\n?(.*?)\n?\/\* SITETUS_MODULE_END:\1 \*\/\n?/s',
+                static function (array $match) use ($selected): string {
+                    return in_array($match[1], $selected, true) ? $match[0] : '';
+                },
+                $source
+            );
+        };
+
+        $without = $keep(['files', 'archives', 'permissions', 'bot_traffic']);
+        $with = $keep(['secret_check']);
+
+        foreach (['final class SecretCheck', 'final class SecretCheckData', 'SITETUS_DATA', 'function contains', 'SITETUS_MODULE_START:secret_check'] as $needle) {
+            $this->assertStringNotContainsString($needle, $without);
+            $this->assertStringContainsString($needle, $with);
+        }
+
+        // The list is in the module's block and nowhere else: its first and
+        // last base64 lines are in one file and not in the other.
+        $lines = explode("\n", rtrim(chunk_split(base64_encode((string) file_get_contents($repo.'/src/data/known_secrets_laravel.bin')), 76, "\n")));
+
+        foreach ([$lines[0], $lines[count($lines) - 1]] as $line) {
+            $this->assertStringNotContainsString($line, $without);
+            $this->assertStringContainsString($line, $with);
+        }
+
+        // Nothing but the module reads `app.key` for more than "is it set",
+        // nothing reads the JWT secret, and nothing keyed is computed.
+        $this->assertSame(1, substr_count($without, "'app.key'"));
+        $this->assertSame(2, substr_count($with, "'app.key'"));
+        $this->assertStringNotContainsString('jwt.secret', $source);
+        $this->assertStringNotContainsString('sitetus-secret-fingerprint', $source);
+        $this->assertStringNotContainsString('hash_hmac', (string) strstr($with, 'SITETUS_MODULE_START:secret_check'));
+
+        // Without the module the file is within a few KB of the 0.7.4 build
+        // (128,504 bytes); with it, no long base64 block either.
+        $this->assertLessThan(128504 + 4096, strlen($without));
+        $this->assertSame(0, preg_match('/[A-Za-z0-9+\/]{200,}/', $with));
+
+        file_put_contents($work.'/without.php', $without);
+        file_put_contents($work.'/with.php', $with);
+
+        $runner = $work.'/runner.php';
+        file_put_contents($runner, <<<'PHP'
+<?php
+define('SITETUS_COLLECTOR_NO_RUN', true);
+require $argv[1];
+
+final class StubConfig
+{
+    public function get($key, $default = null)
+    {
+        $values = ['app.key' => 'base64:made-up-private-app-key-not-on-any-list-00='];
+
+        return array_key_exists($key, $values) ? $values[$key] : $default;
+    }
+}
+
+final class StubApp
+{
+    public function make($abstract)
+    {
+        if ($abstract === 'config') {
+            return new StubConfig();
+        }
+
+        throw new \RuntimeException('no '.$abstract);
+    }
+}
+
+$run = static function (string $modules) {
+    $config = \Sitetus\Collector\Config::fromArray(['project_key' => 'madeupprojectkey0001', 'modules' => $modules], __DIR__);
+
+    return (new \Sitetus\Collector\ModuleRunner($config))->run(__DIR__, ['detected' => 'laravel'], time(), new StubApp());
+};
+
+$embedded = '\\Sitetus\\Collector\\SecretCheckData';
+
+echo json_encode([
+    'selected' => $run('secret_check'),
+    'not_selected' => $run(''),
+    'data' => class_exists($embedded, false) ? hash('sha256', (string) $embedded::get()) : null,
+]);
+PHP
+        );
+
+        $results = [];
+
+        foreach (['without', 'with'] as $variant) {
+            $runOutput = [];
+            exec(escapeshellarg(PHP_BINARY).' -d display_errors=1 '.escapeshellarg($runner).' '.escapeshellarg($work.'/'.$variant.'.php').' 2>&1', $runOutput, $runExit);
+            $raw = implode("\n", $runOutput);
+            $this->assertSame(0, $runExit, $raw);
+
+            $results[$variant] = json_decode($raw, true);
+            $this->assertIsArray($results[$variant], $raw);
+            $this->assertNull($results[$variant]['not_selected']);
+        }
+
+        $this->assertSame(['unavailable' => true], $results['without']['selected']['secret_check']);
+        $this->assertNull($results['without']['data']);
+        $this->assertSame(['public' => ['app_key' => false]], $results['with']['selected']['secret_check']);
+        $this->assertSame(hash_file('sha256', $repo.'/src/data/known_secrets_laravel.bin'), $results['with']['data']);
+    }
+
     public function testBuiltAndStrippedFileAnswersASignedPullWithModulesRunningOrUnavailable(): void
     {
         $repo = dirname(__DIR__, 2);
@@ -41,6 +167,10 @@ final class BuildArtifactTest extends TestCase
         $built = $work.'/built.php';
         exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($repo.'/build/build.php').' '.escapeshellarg($built).' 2>&1', $buildOutput, $buildExit);
         $this->assertSame(0, $buildExit, implode("\n", $buildOutput));
+
+        // 0.7.5: the list `secret_check` carries is short base64 lines — no
+        // block long enough for the web-shell signature scan to match.
+        $this->assertSame(0, preg_match('/[A-Za-z0-9+\/]{200,}/', (string) file_get_contents($built)));
 
         // 2. A project the file will sit in: root/public/<random>/index.php.
         $root = Support::tmpDir('project');

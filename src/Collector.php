@@ -107,6 +107,7 @@ final class Collector
         $checks = $health->level1Checks($root);
         $warnings = [];
         $level = 1;
+        $app = null;
 
         if ($root !== null && $framework['detected'] === 'laravel' && is_file($root.'/vendor/autoload.php')) {
             $level2 = new Level2();
@@ -115,11 +116,13 @@ final class Collector
             $checks = array_merge($checks, $result['checks']);
             $warnings = array_merge($warnings, $result['warnings']);
             $level = 2;
+            // Only the opt-in `secret_check` module is handed the application.
+            $app = $result['app'];
         }
 
         // Opt-in modules run last, each under its own budget; a
         // module failure degrades to msg.module_failed, never to an error.
-        $modules = (new ModuleRunner($this->config))->run($root, $framework, $now);
+        $modules = (new ModuleRunner($this->config))->run($root, $framework, $now, $app);
 
         $envelope = (new Envelope($this->config))->build(
             $level,
