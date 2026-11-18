@@ -50,6 +50,9 @@ final class BuildArtifactTest extends TestCase
 
         $source = (string) file_get_contents($built);
 
+        // One byte form whatever the checkout's line endings: the panel records the hash.
+        $this->assertStringNotContainsString("\r", $source);
+
         // The panel's strip, keeping only the modules named.
         $keep = static function (array $selected) use ($source): string {
             return (string) preg_replace_callback(

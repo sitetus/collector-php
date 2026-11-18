@@ -149,6 +149,9 @@ PHP;
 
 $content = $header."\n".implode("\n\n", $sections)."\n".$footer."\n";
 $content = str_replace('{{BUILD_VERSION}}', \date('Y-m-d').'-dev', $content);
+// The artifact has one byte form whatever line endings the checkout gave the sources:
+// its SHA-256 is recorded by the panel and compared with the installed file.
+$content = str_replace(["\r\n", "\r"], "\n", $content);
 
 if (! is_dir(dirname($output))) {
     mkdir(dirname($output), 0775, true);
