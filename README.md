@@ -53,6 +53,16 @@ No module is selected by default. You choose them in the panel when the package 
 | `bot_traffic` | Request counts per AI crawler from the access log |
 | `secret_check` | Whether `APP_KEY` is a publicly known key, as one yes/no (Laravel only) — see below |
 
+### `files`: what the content scan recognises
+
+The first and last 8 KB of the PHP files under the web root are read on your server and matched against a short list of shapes that planted code takes. A match sends the file's name and the id of the rule, never a line of the file.
+
+- Evaluation of decoded or request-supplied text, a function whose name comes from the request, a command run directly from request input, the evaluating modifier of an old regular-expression function, and an encoded block of 800 characters or more.
+- `remote_loader`: code that runs what it has just fetched — an evaluation whose argument reads a file or an address, or an include of a web or FTP address, a `data:` stream or the request body.
+- `shell_toolkit`: a file that calls four or more different command-execution functions and also reads request input. Code that only looks for a function the host left enabled stops at two or three and does not read the request in the same file.
+
+A match is a reason to look at the file, not a verdict; "nothing matched" says nothing about a file longer than 16 KB beyond its two ends.
+
 ### `secret_check`
 
 Default keys shipped with products, keys printed in tutorials and keys committed to public repositories are collected in public lists, and those lists are what an attacker tries first. This module checks, on your server, whether `APP_KEY` is one of them. It is the only part of the collector that reads a configuration value for its content, which is why it is a separate choice.

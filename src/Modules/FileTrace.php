@@ -59,8 +59,35 @@ final class FileTrace
         'shell_request' => '/\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*(?:@\s*)?\$_(?:POST|GET|REQUEST|COOKIE)\b/i',
         'preg_eval' => '/\bpreg_replace\s*\(\s*["\'][^"\']*\/[a-z]*e[a-z]*["\']/i',
         'create_function' => '/\bcreate_function\s*\(\s*["\']["\']\s*,\s*(?:base64_decode|gzinflate|str_rot13)/i',
+        // 0.7.6: code that runs what it fetched; at most 200 characters of one statement.
+        //  - evaluation with a read call in its argument (the address may be a variable);
+        //  - assertion only with a network read or a literal address: an assertion
+        //    over a local read is ordinary test code;
+        //  - include or require of a literal remote, data or request-body stream.
+        'remote_loader' => '/'.self::REAL_CALL.'(?:'
+            .'eval\s*\([^;]{0,200}?'.self::REAL_CALL.'(?:file_get_contents|curl_exec|stream_get_contents|fread|fopen)\s*\('
+            .'|assert\s*\([^;]{0,200}?'.self::REAL_CALL.'(?:curl_exec\s*\(|(?:file_get_contents|fopen)\s*\(\s*["\'](?:https?|ftps?):\/\/)'
+            .'|(?:include|require)(?:_once)?[\s(]{0,20}["\'](?:(?:https?|ftps?):\/\/|data:|php:\/\/input)'
+            .')/i',
+        // Kept last: shell_toolkit (not a regex, see isShellToolkit()) is judged just before it.
         'long_base64' => '/[A-Za-z0-9+\/]{800,}={0,2}/',
     ];
+
+    /** Not a method, a static call, a variable or the tail of a longer name. */
+    private const REAL_CALL = '(?<![\w$])(?<!->)(?<!::)';
+
+    /** 0.7.6: the command-execution family, as real calls (not a declaration either). */
+    private const SHELL_CALLS = '/'.self::REAL_CALL.'(?<!function )(system|shell_exec|passthru|exec|popen|proc_open)\s*\(/i';
+
+    /** 0.7.6: request input; $_SERVER is in nearly every entry file and says nothing. */
+    private const REQUEST_INPUT = '/\$_(?:POST|GET|REQUEST|COOKIE|FILES)\b/';
+
+    /**
+     * 0.7.6: DIFFERENT functions of the family that make a toolkit. Code
+     * probing for an enabled one tries two or three, and not next to
+     * request input; a file manager offers them all to the request.
+     */
+    private const SHELL_TOOLKIT_MIN = 4;
 
     /**
      * @return array<string, mixed>
@@ -568,9 +595,21 @@ final class FileTrace
      * The classic obfuscated-shell shapes: eval/assert over a decoder
      * (base64/gzinflate/str_rot13/strrev), request-driven variable
      * functions or shell calls, preg_replace /e, create_function, and
-     * very long base64 blobs. First and last 8 KB only.
+     * very long base64 blobs; 0.7.6: remote_loader and shell_toolkit.
+     * First and last 8 KB only.
      */
     private function suspiciousRule(string $absolute): ?string
+    {
+        $sample = $this->contentSample($absolute);
+
+        return $sample === null ? null : $this->signatureRule($sample);
+    }
+
+    /**
+     * The first and last 8 KB, or the code before a __halt_compiler token;
+     * null when the file cannot be read.
+     */
+    private function contentSample(string $absolute): ?string
     {
         // 0.5.1: regular files only (a FIFO would block the pull).
         if (! @is_file($absolute) || @is_link($absolute)) {
@@ -595,7 +634,7 @@ final class FileTrace
         if ($haltAt !== null) {
             fclose($handle);
 
-            return $this->signatureRule(substr($sample, 0, $haltAt));
+            return substr($sample, 0, $haltAt);
         }
 
         if ($size > self::CONTENT_SCAN_BYTES * 2) {
@@ -607,7 +646,7 @@ final class FileTrace
 
         fclose($handle);
 
-        return $this->signatureRule($sample);
+        return $sample;
     }
 
     /**
@@ -641,11 +680,35 @@ final class FileTrace
     private function signatureRule(string $sample): ?string
     {
         foreach (self::SUSPICIOUS_PATTERNS as $rule => $pattern) {
+            if ($rule === 'long_base64' && $this->isShellToolkit($sample)) {
+                return 'shell_toolkit';
+            }
+
             if (preg_match($pattern, $sample) === 1) {
                 return (string) $rule;
             }
         }
 
         return null;
+    }
+
+    /**
+     * 0.7.6: a co-occurrence, not a signature — SHELL_TOOLKIT_MIN different
+     * functions of the family are called and request input is read, both
+     * anywhere in the sample (the same head and tail window). One pass; a
+     * second only for the few files that pass the first. A call is the
+     * bare name and an opening parenthesis: methods, static calls,
+     * declarations and longer names do not count. Nothing is tokenized,
+     * so a call inside a comment or a string counts too.
+     */
+    private function isShellToolkit(string $sample): bool
+    {
+        if ((int) preg_match_all(self::SHELL_CALLS, $sample, $calls) < self::SHELL_TOOLKIT_MIN) {
+            return false;
+        }
+
+        $distinct = count(array_unique(array_map('strtolower', $calls[1])));
+
+        return $distinct >= self::SHELL_TOOLKIT_MIN && preg_match(self::REQUEST_INPUT, $sample) === 1;
     }
 }

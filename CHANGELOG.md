@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.6 — 2026-11-18
+
+`files` module: the content scan recognises two more shapes of planted code. A small loader that downloaded a file-manager backdoor and ran it, and the downloaded file itself, matched none of the existing signatures: neither holds an encoded block, and neither hands request input straight to a command.
+
+- New rule `remote_loader`: code that runs what it has just fetched. Three shapes are recognised: the evaluating construct whose argument, in the same statement, contains a call that reads a file or an address (the address may be held in a variable, so any such read counts); the assertion construct whose argument contains a network read or a read of a literal web or FTP address; and an include or require whose target is a literal web or FTP address, a `data:` stream or the request body. A fetch whose result is only assigned, an assertion over a local file, and an include of a local path do not match.
+- New rule `shell_toolkit`: a file that calls at least four different functions of the command-execution family (the six functions PHP has for running a program) and reads request input (`$_GET`, `$_POST`, `$_REQUEST`, `$_COOKIE` or `$_FILES`) anywhere in the scanned part. Why four: code that looks for a function the host left enabled tries two or three of them and does not read request input in the same file, while a file manager offers them all to whoever sends the request. Only the bare function call counts — a method or a declaration of the same name does not — and the scan does not tell code from comments or strings, so a call written in a comment counts too.
+- Both rules read the same part of a file as the others (the first and last 8 KB) under the same limits, and a file is still reported under one rule: the first that matches, with the very general long-base64 rule tried last.
+- What they do not cover: a loader that saves the download to disk and includes it from there, and a toolkit whose calls all sit in the middle of a file longer than 16 KB.
+- `php_files.suspicious.rules` can now carry `remote_loader` and `shell_toolkit`. Envelope format, signature material and the other modules are unchanged; a panel that does not know the two ids still lists the file as suspicious.
+
 ## 0.7.5 — 2026-11-18
 
 A new optional module, off unless the installation selects it, says whether the Laravel application key is one that is already publicly known. The comparison happens on the server; one yes/no leaves it.

@@ -226,6 +226,91 @@ final class ModulesTest extends TestCase
     }
 
     /**
+     * 0.7.6: `remote_loader` (code that runs what it fetched) and
+     * `shell_toolkit` (four or more different command-execution functions
+     * next to request input). Every fixture is put together here from
+     * fragments, points at a reserved host that does not resolve and cannot
+     * do anything when opened: the ones that must match keep their text in
+     * a comment (the scan does not tokenize, so it counts), so a desktop
+     * antivirus has nothing to quarantine while the test runs.
+     */
+    public function testFileTraceNamesRemoteLoadersAndShellToolkitsAndLeavesNearMissesAlone(): void
+    {
+        $root = $this->laravelProject();
+        unlink($root.'/public/wp-cache.php');
+        mkdir($root.'/public/kit', 0777, true);
+
+        $run = 'ev'.'al';
+        $check = 'ass'.'ert';
+        $read = 'file_get_'.'contents';
+        $fetch = 'curl_'.'exec';
+        $pull = 'inc'.'lude';
+        $need = 'requ'.'ire_once';
+        $address = "'https://example.invalid/x.txt'";
+        $input = '$'.'_POST';
+        $family = ['sys'.'tem', 'shell_'.'exec', 'pass'.'thru', 'ex'.'ec', 'po'.'pen', 'proc_'.'open'];
+        $calls = static function (array $names): string {
+            return "<?php\n// ".implode('($a); ', $names)."(\$a);\n";
+        };
+
+        $fixtures = [
+            // Hits: remote_loader.
+            'hit-run-address.php' => "<?php\n// {$run}('?>'.{$read}({$address}));",
+            'hit-run-variable.php' => "<?php\n/*\n{$run}(\n    '?>'.{$read}(\$u)\n);\n*/",
+            'hit-run-network.php' => "<?php\n// {$run}({$fetch}(\$handle));",
+            'hit-check-address.php' => "<?php\n// @{$check}({$read}({$address}));",
+            'hit-pull-address.php' => "<?php\n// {$pull} {$address};",
+            'hit-need-body.php' => "<?php\n// {$need}('php://input');",
+            // Hits: shell_toolkit — four and six of the family, with request input.
+            'hit-toolkit-four.php' => $calls(array_slice($family, 0, 4))."\$a = {$input}['a'];",
+            'hit-toolkit-six.php' => $calls($family).'$a = $'."_FILES['a'];",
+            // A toolkit that also carries a blob is named as a toolkit, not as a blob.
+            'hit-toolkit-blob.php' => $calls($family)."\$a = {$input}['a'];\n// ".str_repeat('QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo', 40),
+            // Near misses: three of the family with request input; four without any.
+            'miss-three-with-input.php' => $calls(array_slice($family, 0, 3))."\$a = {$input}['a'];",
+            'miss-four-no-input.php' => $calls(array_slice($family, 0, 4)).'$a = $'."_SERVER['argv'];",
+            // The same call counted four times is one function; methods, static calls,
+            // declarations and longer names that end the same way are not calls of the family.
+            'miss-one-repeated.php' => $calls([$family[0], $family[0], $family[0], $family[0]])."\$a = {$input}['a'];",
+            // Three real calls; each form that is not a call uses one of the other three names,
+            // so a single one counted by mistake would make four.
+            'miss-not-calls.php' => $calls(array_slice($family, 0, 3))."// \$db->{$family[3]}(\$a); Shell::{$family[3]}(\$a); {$fetch}(\$a); pcntl_{$family[3]}(\$a);\n// function {$family[4]}(\$a) \${$family[4]}(\$a); \$this->{$family[5]}(\$a); my{$family[5]}(\$a);\n\$a = {$input}['a'];",
+            // A remote read that is only assigned; a plain assertion over a local read.
+            'miss-read-assigned.php' => "<?php \$body = {$read}({$address});\n\$len = strlen(\$body);\n\$h = fopen('https://example.invalid/y', 'r');",
+            'miss-check-local.php' => "<?php {$check}({$read}(\$path) !== false, 'readable');",
+            // Includes of local paths, even ones that begin like a wrapper name.
+            'miss-pull-local.php' => "<?php {$pull} __DIR__.'/http/helpers.php';\n{$pull} 'data/list.php';\n{$need}('https.php');\n{$need} \$base.'/ftp/client.php';",
+            // A method of that name on an object is not the evaluating construct.
+            'miss-run-method.php' => "<?php \$vm->{$run}({$read}(\$path)); Script::{$run}({$fetch}(\$handle));",
+        ];
+
+        foreach ($fixtures as $name => $content) {
+            file_put_contents($root.'/public/kit/'.$name, $content);
+        }
+
+        $section = (new ModuleRunner($this->configWithModules($root, 'files')))->run($root, ['detected' => 'laravel'], time());
+        $suspicious = $section['files']['php_files']['suspicious'];
+
+        $this->assertSame(count($fixtures) + 1, $suspicious['inspected']);
+        $this->assertFalse($suspicious['partial']);
+        // The rule id travels with each name, in the same order.
+        $this->assertSame([
+            'kit/hit-check-address.php' => 'remote_loader',
+            'kit/hit-need-body.php' => 'remote_loader',
+            'kit/hit-pull-address.php' => 'remote_loader',
+            'kit/hit-run-address.php' => 'remote_loader',
+            'kit/hit-run-network.php' => 'remote_loader',
+            'kit/hit-run-variable.php' => 'remote_loader',
+            'kit/hit-toolkit-blob.php' => 'shell_toolkit',
+            'kit/hit-toolkit-four.php' => 'shell_toolkit',
+            'kit/hit-toolkit-six.php' => 'shell_toolkit',
+        ], array_combine($suspicious['names'], $suspicious['rules']));
+        $this->assertSame(9, $suspicious['count']);
+        // Names and rule ids only: nothing of a file's text is in the envelope.
+        $this->assertStringNotContainsString('example.invalid', (string) json_encode($section));
+    }
+
+    /**
      * 0.6.1: WooCommerce, Wordfence, Sucuri and hosts drop protective
      * control files under uploads; only the ones that make PHP run (or
      * cannot be read through) stay in count/names. Content never leaves.
