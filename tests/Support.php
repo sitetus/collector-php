@@ -30,7 +30,17 @@ final class Support
         );
 
         foreach ($items as $item) {
-            $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+            $pathname = $item->getPathname();
+
+            // A link to a directory reports isDir() while its target exists,
+            // yet Linux removes it with unlink() and Windows with rmdir().
+            if ($item->isLink()) {
+                @unlink($pathname) || @rmdir($pathname);
+
+                continue;
+            }
+
+            $item->isDir() ? rmdir($pathname) : unlink($pathname);
         }
 
         rmdir($path);
