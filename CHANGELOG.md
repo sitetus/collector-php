@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.7 — 2026-11-19
+
+The optional `secret_check` module is removed.
+
+- The module added in 0.7.5, its embedded list and the script that generated the list are gone. No part of the collector reads the application key for more than whether it is set, as before 0.7.5.
+- A configuration that still names `secret_check` is ignored: the name is no longer a module, and nothing is sent for it.
+- The booted application is no longer handed to the module runner.
+- Envelope format, signature material and the other modules are unchanged.
+
 ## 0.7.6 — 2026-11-18
 
 `files` module: the content scan recognises two more shapes of planted code. A small loader that downloaded a file-manager backdoor and ran it, and the downloaded file itself, matched none of the existing signatures: neither holds an encoded block, and neither hands request input straight to a command.

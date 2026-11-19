@@ -9,7 +9,7 @@ namespace Sitetus\Collector;
  */
 final class Config
 {
-    public const VERSION = '0.7.6';
+    public const VERSION = '0.7.7';
 
     public const SCHEMA_VERSION = 1;
 
@@ -41,7 +41,7 @@ final class Config
 
     /**
      * Opt-in modules enabled for this installation: files,
-     * archives, permissions, bot_traffic, secret_check. Empty = none. The panel sets the list at package
+     * archives, permissions, bot_traffic. Empty = none. The panel sets the list at package
      * time and strips the code of unselected modules from the file.
      *
      * @var array<int, string>

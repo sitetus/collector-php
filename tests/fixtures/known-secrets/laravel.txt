@@ -1,7 +1,0 @@
-# made-up values for the tests; none of these is a real key
-base64:made-up-fixture-key-one-not-a-real-key-000=
-  base64:made-up-fixture-key-two-not-a-real-key-000=
-
-MadeUpFixtureLegacyKeyNotARealOne
-APP_KEY="base64:made-up-fixture-key-three-not-real-key-00="
-base64:made-up-fixture-key-one-not-a-real-key-000=

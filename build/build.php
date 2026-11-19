@@ -35,7 +35,6 @@ $moduleFiles = [
     'archives' => 'Modules/ArchiveScan.php',
     'permissions' => 'Modules/PermissionScan.php',
     'bot_traffic' => 'Modules/BotTraffic.php',
-    'secret_check' => 'Modules/SecretCheck.php',
 ];
 
 $strip = function (string $file) use ($root): string {
@@ -62,48 +61,8 @@ foreach ($classFiles as $file) {
     $sections[] = $strip($file);
 }
 
-/*
- * `secret_check` carries its list (src/data/known_secrets_laravel.bin, see
- * src/data/NOTICE) inside its own block as base64 text, so the single file
- * stays self-contained and a file without the module holds no list. Lines
- * are 76 characters: no long unbroken base64 run, and the nowdoc label
- * holds a character base64 never has. Nothing is decoded until asked for.
- */
-$moduleData = [
-    'secret_check' => static function () use ($root): string {
-        $data = @file_get_contents($root.'/src/data/known_secrets_laravel.bin');
-
-        if (! is_string($data) || $data === '' || strlen($data) % 6 !== 0) {
-            fwrite(STDERR, "Missing or damaged data file: known_secrets_laravel.bin\n");
-            exit(1);
-        }
-
-        return "\n\n/**\n"
-            ." * Publicly known Laravel application keys as truncated SHA-256 hashes (6\n"
-            ." * bytes per entry, sorted), base64 text. No key is in this file. Derived\n"
-            ." * from the MIT-licensed lists of synacktiv/laravel-crypto-killer\n"
-            ." * (Copyright (c) 2024 Synacktiv); see src/data/NOTICE in the source.\n"
-            ." */\n"
-            ."final class SecretCheckData\n"
-            ."{\n"
-            ."    /**\n"
-            ."     * @return string|false\n"
-            ."     */\n"
-            ."    public static function get()\n"
-            ."    {\n"
-            ."        return base64_decode(<<<'SITETUS_DATA'\n"
-            .rtrim(chunk_split(base64_encode($data), 76, "\n"))."\n"
-            ."SITETUS_DATA\n"
-            ."        );\n"
-            ."    }\n"
-            ."}";
-    },
-];
-
 foreach ($moduleFiles as $id => $file) {
-    $data = isset($moduleData[$id]) ? $moduleData[$id]() : '';
-
-    $sections[] = "/* SITETUS_MODULE_START:{$id} */\n".$strip($file).$data."\n/* SITETUS_MODULE_END:{$id} */";
+    $sections[] = "/* SITETUS_MODULE_START:{$id} */\n".$strip($file)."\n/* SITETUS_MODULE_END:{$id} */";
 }
 
 $header = <<<'PHP'

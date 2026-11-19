@@ -17,7 +17,7 @@ use Sitetus\Collector\Config;
  */
 final class ModuleRunner
 {
-    public const ALL = ['files', 'archives', 'permissions', 'bot_traffic', 'secret_check'];
+    public const ALL = ['files', 'archives', 'permissions', 'bot_traffic'];
 
     /** @var Config */
     private $config;
@@ -29,10 +29,9 @@ final class ModuleRunner
 
     /**
      * @param array{detected: string} $framework
-     * @param mixed $app the booted application when Level 2 ran (Laravel), else null; only `secret_check` is handed it
      * @return array<string, mixed>|null null when no module is enabled
      */
-    public function run(?string $root, array $framework, int $now, $app = null): ?array
+    public function run(?string $root, array $framework, int $now): ?array
     {
         $enabled = array_values(array_intersect(self::ALL, $this->config->modules));
 
@@ -45,7 +44,7 @@ final class ModuleRunner
         $section = ['enabled' => $enabled, 'web_root' => $detected === 'laravel' ? 'public' : '.'];
 
         foreach ($enabled as $module) {
-            $section[$module] = $this->runModule($module, $root, $webRoot, $detected, $now, $app);
+            $section[$module] = $this->runModule($module, $root, $webRoot, $detected, $now);
         }
 
         return $section;
@@ -57,10 +56,9 @@ final class ModuleRunner
     }
 
     /**
-     * @param mixed $app
      * @return array<string, mixed>
      */
-    private function runModule(string $module, string $root, string $webRoot, string $framework, int $now, $app = null): array
+    private function runModule(string $module, string $root, string $webRoot, string $framework, int $now): array
     {
         try {
             switch ($module) {
@@ -79,10 +77,6 @@ final class ModuleRunner
                 case 'bot_traffic':
                     return class_exists(BotTraffic::class)
                         ? (new BotTraffic())->run($root, $now)
-                        : ['unavailable' => true];
-                case 'secret_check':
-                    return class_exists(SecretCheck::class)
-                        ? (new SecretCheck())->run($app)
                         : ['unavailable' => true];
             }
         } catch (\Throwable $exception) {

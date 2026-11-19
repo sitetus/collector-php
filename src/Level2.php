@@ -12,16 +12,12 @@ namespace Sitetus\Collector;
 final class Level2
 {
     /**
-     * `app` is the booted application, or null when the bootstrap failed;
-     * an opt-in module that needs the application is handed it (0.7.5).
-     *
-     * @return array{checks: array<int, array<string, mixed>>, warnings: array<int, string>, app: mixed}
+     * @return array{checks: array<int, array<string, mixed>>, warnings: array<int, string>}
      */
     public function run(string $root): array
     {
         $checks = [];
         $warnings = [];
-        $booted = null;
 
         $displayErrors = Health::ini('display_errors');
         $errorReporting = error_reporting();
@@ -41,7 +37,6 @@ final class Level2
 
             $kernel = $app->make(\Illuminate\Contracts\Console\Kernel::class);
             $kernel->bootstrap();
-            $booted = $app;
 
             $checks = $this->checksFromApp($app);
         } catch (\Throwable $exception) {
@@ -67,7 +62,7 @@ final class Level2
             @ini_set('display_errors', $displayErrors);
         }
 
-        return ['checks' => $checks, 'warnings' => $warnings, 'app' => $booted];
+        return ['checks' => $checks, 'warnings' => $warnings];
     }
 
     /**
