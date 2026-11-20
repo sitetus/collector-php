@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.8 — 2026-11-20
+
+No change in what the collector reads or sends.
+
+- The two database helpers that need no application (the scope of a `user@host` account as one word, and whether a configured host is this server) move from `Level2` to their own class, `DatabaseAccount`. The WordPress plugin uses them and no longer has to carry the Laravel bootstrap to do so.
+- Envelope format, signature material and the modules are unchanged.
+
 ## 0.7.7 — 2026-11-19
 
 The optional `secret_check` module is removed.

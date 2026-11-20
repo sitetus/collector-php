@@ -3,6 +3,7 @@
 namespace Sitetus\Collector\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Sitetus\Collector\DatabaseAccount;
 use Sitetus\Collector\Level2;
 
 /**
@@ -16,40 +17,40 @@ final class Level2DatabaseScopeTest extends TestCase
 {
     public function testLocalHostsAreLocal(): void
     {
-        $this->assertSame('local', Level2::accountScope('shop_user@localhost'));
-        $this->assertSame('local', Level2::accountScope('shop_user@LOCALHOST'));
-        $this->assertSame('local', Level2::accountScope('shop_user@127.0.0.1'));
-        $this->assertSame('local', Level2::accountScope('shop_user@::1'));
+        $this->assertSame('local', DatabaseAccount::scope('shop_user@localhost'));
+        $this->assertSame('local', DatabaseAccount::scope('shop_user@LOCALHOST'));
+        $this->assertSame('local', DatabaseAccount::scope('shop_user@127.0.0.1'));
+        $this->assertSame('local', DatabaseAccount::scope('shop_user@::1'));
     }
 
     public function testOnlyTheBareWildcardIsAny(): void
     {
-        $this->assertSame('any', Level2::accountScope('shop_user@%'));
-        $this->assertSame('any', Level2::accountScope("shop_user@'%'"));
+        $this->assertSame('any', DatabaseAccount::scope('shop_user@%'));
+        $this->assertSame('any', DatabaseAccount::scope("shop_user@'%'"));
     }
 
     public function testNamedHostsAddressesAndNarrowedPatternsAreSpecific(): void
     {
-        $this->assertSame('specific', Level2::accountScope('shop_user@192.168.1.%'));
-        $this->assertSame('specific', Level2::accountScope('shop_user@%.example.test'));
-        $this->assertSame('specific', Level2::accountScope('shop_user@db_host'));
-        $this->assertSame('specific', Level2::accountScope('shop_user@10.0.0.5'));
-        $this->assertSame('specific', Level2::accountScope('shop_user@app01.example.test'));
-        $this->assertSame('specific', Level2::accountScope('shop_user@192.168.1.0/255.255.255.0'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@192.168.1.%'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@%.example.test'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@db_host'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@10.0.0.5'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@app01.example.test'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@192.168.1.0/255.255.255.0'));
     }
 
     public function testOnlyTheTextAfterTheLastAtSignIsTheHost(): void
     {
         // A wildcard or an @ in the user name says nothing about the host.
-        $this->assertSame('local', Level2::accountScope('odd%user@name@localhost'));
-        $this->assertSame('specific', Level2::accountScope('shop_user@10.0.0.5'));
+        $this->assertSame('local', DatabaseAccount::scope('odd%user@name@localhost'));
+        $this->assertSame('specific', DatabaseAccount::scope('shop_user@10.0.0.5'));
     }
 
     public function testAnswerWithoutAHostPartIsNotClassified(): void
     {
-        $this->assertNull(Level2::accountScope('shop_user'));
-        $this->assertNull(Level2::accountScope('shop_user@'));
-        $this->assertNull(Level2::accountScope(''));
+        $this->assertNull(DatabaseAccount::scope('shop_user'));
+        $this->assertNull(DatabaseAccount::scope('shop_user@'));
+        $this->assertNull(DatabaseAccount::scope(''));
     }
 
     /**
@@ -152,7 +153,7 @@ final class Level2DatabaseScopeTest extends TestCase
     public function testLocalHostsAndSocketsAreThisServer(): void
     {
         foreach (['localhost', 'LOCALHOST', '127.0.0.1', '::1', '[::1]:3306', 'localhost:3306', 'localhost:/var/run/mysqld/mysqld.sock', '/var/run/mysqld/mysqld.sock'] as $host) {
-            $this->assertTrue(Level2::isLocalDatabaseHost($host), $host);
+            $this->assertTrue(DatabaseAccount::isLocalHost($host), $host);
         }
 
         $socket = (new Level2())->checksFromApp($this->container('mysql', 'shop_user@localhost', ['host' => 'db.example.test', 'unix_socket' => '/tmp/mysql.sock']));

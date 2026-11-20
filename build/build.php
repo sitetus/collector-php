@@ -18,6 +18,7 @@ $classFiles = [
     'RequestVerifier.php',
     'Inventory.php',
     'Health.php',
+    'DatabaseAccount.php',
     'Level2.php',
     'Envelope.php',
     'Modules/Scanner.php',
